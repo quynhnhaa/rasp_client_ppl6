@@ -51,7 +51,7 @@ def detect_motion(prev_gray, curr_gray, config):
 
 # ========== Gửi ảnh qua ImageZMQ ==========
 def send_frame(sender, frame, tag, quality):
-    cam_id = f"{CAMERA_NAME}:{tag}"
+    cam_id = f"{CAMERA_NAME}"
     ok, jpg = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
     if ok:
         sender.send_jpg(cam_id, jpg)
