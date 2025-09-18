@@ -17,13 +17,7 @@ from picamera2 import Picamera2
 CONFIG = {
     "server_ip": os.getenv("server_ip", "172.20.10.12"),
     "port": int(os.getenv("port", "5555")),
-    "jpeg_quality_motion": int(os.getenv("jpeg_quality_motion", "85")),
-    "jpeg_quality_idle": int(os.getenv("jpeg_quality_idle", "70")),
-    "target_fps": int(os.getenv("target_fps", "10")),
-    "heartbeat_interval": float(os.getenv("heartbeat_interval", "1.0")),
-    "motion_pixel_threshold": int(os.getenv("motion_pixel_threshold", "5000")),
-    "diff_threshold": int(os.getenv("diff_threshold", "25")),
-    "blur_kernel": 19, # int(frame_size[0] * 0.03)
+    "jpeg_quality": int(os.getenv("jpeg_quality", "85")),
     "frame_size": (640, 480)
 }
 
@@ -70,7 +64,7 @@ def main():
             last_frame_time = time.time()
 
 
-            quality = CONFIG["jpeg_quality_motion"] 
+            quality = CONFIG["jpeg_quality"] 
 
             if sender is None:
                 try:
