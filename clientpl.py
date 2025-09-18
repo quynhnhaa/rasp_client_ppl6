@@ -54,7 +54,6 @@ def send_frame(sender, frame, tag, quality):
     cam_id = f"{CAMERA_NAME}"
     ok, jpg = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
     if ok:
-        print(f"{cam_id}")
         sender.send_jpg(cam_id, jpg)
 
 # ========== Vòng lặp chính ==========
