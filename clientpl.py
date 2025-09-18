@@ -28,7 +28,7 @@ CONNECT_TO = f"tcp://{CONFIG['server_ip']}:{CONFIG['port']}"
 # ========== Khởi tạo camera ==========
 def init_camera():
     cam = Picamera2()
-    cam_config = cam.create_preview_configuration({"size": CONFIG["frame_size"]})
+    cam_config = cam.create_preview_configuration(main = {"size": CONFIG["frame_size"], "format": "RGB888"})
     cam.configure(cam_config)
     cam.start()
     return cam
@@ -54,8 +54,6 @@ def main():
     while True:
         try:
             frame = cam.capture_array()
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
             # Giới hạn FPS
             now = time.time()
@@ -79,7 +77,7 @@ def main():
                     continue
 
             try:
-                send_frame(sender, frame_rgb, quality)
+                send_frame(sender, frame, quality)
             except Exception as e:
                 print(f"[ERROR] Failed to send frame: {e}")
                 sender = None
