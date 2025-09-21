@@ -3,7 +3,7 @@ import cv2
 import os
 
 # Đường dẫn ảnh
-image_file = "/Users/quynhnhaa/Documents/Ahn/Study/Year4.1/PBL6/ImageZQ/Vietnamese Productions Classification/test/images/3029c2ea91aa921f78eb94422600891e_jpg.rf.e3a3ea412713fb17fbf26ce44013d2b4.jpg"
+image_file = "3029c2ea91aa921f78eb94422600891e_jpg.rf.e3a3ea412713fb17fbf26ce44013d2b4.jpg"
 image = cv2.imread(image_file)
 
 # Load model từ Roboflow
