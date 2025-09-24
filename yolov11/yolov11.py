@@ -11,12 +11,14 @@ model = YOLO(sys.argv[1])
 
 
 picam2 = Picamera2()
-config = picam2.create_preview_configuration(main={"format": "RGB8888", "size": (640, 640)})
+config = picam2.create_preview_configuration(main={"format": "XRGB8888", "size": (640, 640)})
 picam2.configure(config)
 picam2.start()
 
 while True:
     frame = picam2.capture_array()
+    frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)  # bỏ kênh Alpha
+
     results = model.predict(source=frame, show=False,save=False, verbose=False)
     annoted_frame = results[0].plot()
     cv2.imshow("YOLOv11 Real-time", annoted_frame)
