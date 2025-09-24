@@ -5,7 +5,6 @@ import sys
 from multiprocessing import Process, Queue
 
 def camera_process(queue: Queue):
-    """Process đọc camera và đưa frame vào queue"""
     picam2 = Picamera2()
     config = picam2.create_preview_configuration(
         main={"format": "XRGB8888", "size": (640, 640)}
@@ -19,7 +18,6 @@ def camera_process(queue: Queue):
             queue.put(frame)
 
 def inference_process(queue: Queue, model_path: str):
-    """Process chạy YOLO inference"""
     model = YOLO(model_path)
 
     while True:
