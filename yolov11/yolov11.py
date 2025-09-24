@@ -11,7 +11,7 @@ model = YOLO(sys.argv[1])
 
 
 picam2 = Picamera2()
-config = picam2.create_preview_configuration(main={"format": "XRGB8888", "size": (640, 640)})
+config = picam2.create_preview_configuration(main={"format": "RGB8888", "size": (640, 640)})
 picam2.configure(config)
 picam2.start()
 
