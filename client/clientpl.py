@@ -12,7 +12,6 @@ import cv2
 import numpy as np
 import imagezmq
 from picamera2 import Picamera2
-from inference import get_model
 # ========== Cấu hình hệ thống ==========
 CONFIG = {
     "server_ip": os.getenv("server_ip", "172.20.10.12"),
@@ -41,29 +40,6 @@ def send_frame(sender, frame, quality):
     jpg_buffer_array = np.array(jpg_buffer).tobytes()
     if ok:
         sender.send_jpg(cam_id, jpg_buffer_array)
-# ========== Gửi ảnh qua ImageZMQ ==========
-def detect_products(frame, model):
-    results = model.infer(frame, confidence=0.4, overlap=0.5)[0]
-    for pred in results.predictions:
-        x, y = int(pred.x), int(pred.y)
-        w, h = int(pred.width), int(pred.height)
-        conf = pred.confidence
-        class_name = pred.class_name
-        
-        # Tính toạ độ bounding box
-        x1 = int(x - w / 2)
-        y1 = int(y - h / 2)
-        x2 = int(x + w / 2)
-        y2 = int(y + h / 2)
-
-        # Vẽ khung chữ nhật
-        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-
-        # Vẽ nhãn + confidence
-        label = f"{class_name}: {conf:.2f}"
-        cv2.putText(frame, label, (x1, y1 - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-    return frame
 # ========== Vòng lặp chính ==========
 def main():
     print(f"[INFO] Connecting to server at {CONNECT_TO}")
@@ -74,15 +50,9 @@ def main():
     last_frame_time = time.time()
     frame_interval = 1.0 / CONFIG["target_fps"]
 
-    model = model = get_model(
-        model_id="vietnamese-productions-classification/19",
-        api_key="gMIGrMPVZUiwmUML8smO"
-    )
-
     while True:
         try:
             frame = cam.capture_array()
-            frame = detect_products(frame, model)
             
             # Giới hạn FPS
             now = time.time()
