@@ -69,6 +69,7 @@ class I2CDevice:
         else:
             self.addr = addr
         self.bus = SMBus(bus)
+        print(self.addr)
 
     # write a single command
     def write_cmd(self, cmd):
