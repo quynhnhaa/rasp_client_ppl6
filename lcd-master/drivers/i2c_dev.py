@@ -68,6 +68,7 @@ class I2CDevice:
                 self.addr = addr_default
         else:
             self.addr = addr
+        print(self.addr)
         self.bus = SMBus(bus)
 
     # write a single command

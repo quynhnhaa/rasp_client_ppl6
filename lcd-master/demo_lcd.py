@@ -10,7 +10,7 @@ from time import sleep
 
 # Load the driver and set it to "display"
 # If you use something from the driver library use the "display." prefix first
-display = drivers.Lcd(addr='0x27')
+display = drivers.Lcd(addr=0x27)
 
 # Main body of code
 try:
