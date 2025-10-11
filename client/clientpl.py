@@ -17,7 +17,7 @@ CONFIG = {
     "server_ip": os.getenv("server_ip", "172.20.10.12"),
     "port": int(os.getenv("port", "5555")),
     "jpeg_quality": int(os.getenv("jpeg_quality", "90")),
-    "target_fps": int(os.getenv("target_fps", "10")),
+    "target_fps": int(os.getenv("target_fps", "20")),
     "frame_size":  list(map(int, os.getenv("frame_size", "640x640").split("x")))
 }
 
