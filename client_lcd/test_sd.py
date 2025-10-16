@@ -73,7 +73,7 @@ try:
 
         # ✨ Lưu ảnh JPEG + RAW
         metadata = picam2.capture_file(jpeg_path)
-        picam2.capture_metadata_file(raw_path)
+        picam2.capture_metadata_(raw_path)
 
         print(f"✅ Saved {base}.jpg & {base}.dng")
         image_count += 1
