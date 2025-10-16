@@ -3,12 +3,12 @@ import cv2
 import numpy as np
 import time
 from datetime import datetime
-
+import os
 # ========== Cấu hình ==========
 FRAME_SIZE = (640, 640)
 FPS = 20
 DURATION = 25  # giây
-SAVE_DIR = "video_test"
+SAVE_DIR = "./video_test"
 
 # ========== Tạo file video với timestamp ==========
 os.makedirs(SAVE_DIR, exist_ok=True)
