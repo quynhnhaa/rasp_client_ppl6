@@ -19,18 +19,43 @@
 # lcd.clear()
 
 from RPLCD.i2c import CharLCD
-import time
+from time import sleep
 
-lcd = CharLCD('PCF8574', 0x27)  # đổi địa chỉ nếu cần, VD 0x3f
+def long_string(display, text='', num_line=1, num_cols=16):
+    """ 
+    Hiển thị chuỗi dài bằng cách cuộn từ phải sang trái
+    Parameters:
+        display: đối tượng LCD (VD: lcd)
+        text: chuỗi muốn hiển thị
+        num_line: dòng (1 hoặc 2)
+        num_cols: số cột (thường là 16)
+    """
+    if len(text) <= num_cols:
+        # Nếu chuỗi ngắn, in thẳng
+        display.cursor_pos = (num_line - 1, 0)
+        display.write_string(text.ljust(num_cols))
+        return
+
+    # Thêm khoảng trắng để hiệu ứng mượt hơn
+    text = ' ' * num_cols + text + ' ' * num_cols
+
+    for i in range(len(text) - num_cols + 1):
+        display.cursor_pos = (num_line - 1, 0)
+        display.write_string(text[i:i + num_cols])
+        sleep(0.3)
+
+
+# --- Main ---
+lcd = CharLCD('PCF8574', 0x27)
 lcd.clear()
 
-text = "Un rat xinh dep nhung LCD ngan qua!"  # ví dụ chuỗi dài
+# Dòng 1 (tĩnh)
+lcd.cursor_pos = (0, 0)
+lcd.write_string("Xin chao, Un!")
 
-# Thêm khoảng trống để tạo hiệu ứng trượt mượt
-text = " " * 16 + text + " " * 16
+# Dòng 2 (chạy chữ từ phải sang trái)
+long_string(lcd, "Zero 2W da OK! Chao mung Un nhe!", num_line=2)
 
-while True:
-    for i in range(len(text) - 15):
-        lcd.cursor_pos = (0, 0)
-        lcd.write_string(text[i:i+16])  # hiển thị khung 16 ký tự
-        time.sleep(0.3)
+sleep(1)
+lcd.clear()
+lcd.close()
