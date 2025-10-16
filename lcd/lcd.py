@@ -1,8 +1,19 @@
 from RPLCD.i2c import CharLCD
 import time
 
-lcd = CharLCD('PCF8574', 0x27)  # đổi 0x27 nếu địa chỉ khác
-lcd.write_string("Xin chao, Un!")
-time.sleep(3)
+# Khởi tạo LCD (nếu i2cdetect ra 0x27 hay 0x3f thì sửa lại cho đúng)
+lcd = CharLCD('PCF8574', 0x27)
+
+# Xóa màn hình
 lcd.clear()
-lcd.write_string("Zero 2 W da OK!")
+
+# Dòng 1
+lcd.cursor_pos = (0, 0)
+lcd.write_string("Xin chao, Un!")
+
+# Dòng 2
+lcd.cursor_pos = (1, 0)
+lcd.write_string("Zero 2W da OK!")
+
+time.sleep(5)
+lcd.clear()
