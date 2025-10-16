@@ -41,7 +41,7 @@ def product_sender_mqtt():
         print("[ERROR] paho-mqtt library not found. MQTT sender will not start.")
         return
 
-    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
+    client = mqtt.Client()
     try:
         client.connect(MQTT_BROKER, MQTT_PORT, 60)
         print(f"[MQTT Sender] Connected to broker at {MQTT_BROKER}")

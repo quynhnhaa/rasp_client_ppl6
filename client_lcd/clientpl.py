@@ -130,7 +130,7 @@ def main():
     mqtt_client = None
     if MQTT_AVAILABLE:
         userdata = {'lcd': lcd}
-        mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
+        mqtt_client = mqtt.Client()
         mqtt_client.user_data_set(userdata)
         mqtt_client.on_connect = on_connect
         mqtt_client.on_message = on_message
