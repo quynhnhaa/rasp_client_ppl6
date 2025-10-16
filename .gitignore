@@ -6,3 +6,6 @@ results2/
 results/
 results3/
 videos/
+*.mp4
+*.mov
+detections/

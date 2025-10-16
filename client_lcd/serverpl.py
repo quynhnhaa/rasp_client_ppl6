@@ -1,0 +1,206 @@
+"""
+Multi-Camera Server (ImageZMQ) - Multiprocessing Inference
+"""
+
+import os
+import cv2
+import time
+import queue
+import random
+import threading
+import numpy as np
+import imagezmq
+import paho.mqtt.client as mqtt
+from datetime import datetime
+from collections import defaultdict
+from multiprocessing import Process, Queue, Manager
+
+# ========== Cấu hình ==========
+PORT = int(os.getenv("PORT", 5555))
+SAVE_DIR = os.getenv("SAVE_DIR", "detections")
+INFER_INTERVAL = float(os.getenv("INFER_INTERVAL", 0.15))  # giãn cách giữa các lần inference
+NUM_WORKERS = int(os.getenv("NUM_WORKERS", 2))
+MQTT_BROKER = os.getenv("MQTT_BROKER", "localhost")
+MQTT_PORT = int(os.getenv("MQTT_PORT", 1883))
+MQTT_TOPIC = os.getenv("MQTT_TOPIC", "lcd/messages")
+os.makedirs(SAVE_DIR, exist_ok=True)
+
+# ========== Hàm nhận diện (thay bằng model thật) ==========
+def detect_products(frame_rgb):
+    # Giả lập model: 50% có kết quả, 50% không có
+    if random.random() > 0.5:
+        h, w = frame_rgb.shape[:2]
+        return [(w//4, h//4, w//2, h//2, "product", 0.9)]
+    else:
+        return []  # Trả về danh sách rỗng khi không phát hiện gì
+
+
+def draw_boxes(frame, boxes):
+    for x1, y1, x2, y2, label, score in boxes:
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        text = f"{label}:{score:.2f}"
+        cv2.putText(frame, text, (x1, y1 - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+    return frame
+
+
+def save_frame(cam_id, frame, boxes):
+    if not boxes:
+        return
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    path = os.path.join(SAVE_DIR, f"{cam_id}_{ts}.jpg")
+    cv2.imwrite(path, frame)
+
+
+# ========== Thread A: Nhận ảnh ==========
+def receiver(latest_frames, latest_lock, last_infer_ts, in_queue):
+    hub = imagezmq.ImageHub(open_port=f"tcp://*:{PORT}")
+    print(f"[Receiver] Listening on tcp://*:{PORT}")
+
+    while True:
+        try:
+            cam_name, jpg_buffer = hub.recv_jpg()
+            hub.send_reply(b'OK')
+        except Exception as e:
+            print(f"[Receiver] Error: {e}")
+            time.sleep(0.2)
+            continue
+
+        cam_id = cam_name
+        np_arr = np.frombuffer(jpg_buffer, dtype=np.uint8)
+        frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+        if frame is None:
+            continue
+
+        with latest_lock:
+            latest_frames[cam_id] = frame
+
+        # Đưa frame vào hàng đợi nếu đủ thời gian
+        now = time.time()
+        if now - last_infer_ts[cam_id] >= INFER_INTERVAL:
+            last_infer_ts[cam_id] = now
+            if in_queue.full():
+                try:
+                    in_queue.get_nowait()
+                except queue.Empty:
+                    pass
+            in_queue.put((cam_id, frame.copy()))
+
+
+# ========== Worker Process: Nhận diện ==========
+def worker_process(worker_id, in_q, out_q):
+    print(f"[Worker-{worker_id}] Started")
+    while True:
+        cam_id, frame = in_q.get()
+        try:
+            # Worker thực hiện nhận diện
+            boxes = detect_products(frame)
+
+            # Worker cũng thực hiện vẽ và lưu ảnh để giảm tải cho luồng chính
+            if boxes:
+                annotated = draw_boxes(frame.copy(), boxes)
+                save_frame(cam_id, annotated, boxes)
+
+            # Chỉ gửi lại kết quả (nhẹ) cho luồng chính
+            out_q.put((cam_id, boxes))
+        except Exception as e:
+            print(f"[Worker-{worker_id}] Error: {e}")
+
+
+# ========== Thread B: Nhận kết quả từ worker ==========
+def result_collector(latest_boxes, latest_lock, out_queue):
+    while True:
+        try:
+            cam_id, boxes = out_queue.get()
+            # Cập nhật boxes mới nhất cho vòng lặp hiển thị
+            with latest_lock:
+                latest_boxes[cam_id] = boxes
+        except Exception as e:
+            print(f"[Collector] Error processing queue item: {e}")
+
+# ========== Thread publish tin nhắn MQTT cho LCD ==========
+def lcd_publisher(client):
+    while True:
+        try:
+            # Dữ liệu giả lập để gửi
+            message = f"Time: {datetime.now().strftime('%H:%M:%S')}"
+            client.publish(MQTT_TOPIC, message)
+            print(f"[MQTT] Sent: {message}")
+            time.sleep(20)
+        except Exception as e:
+            print(f"[MQTT] Error: {e}")
+            break
+
+# ========== Main ==========
+def main():
+    # ========== MQTT Client Setup ==========
+    mqtt_client = mqtt.Client()
+    try:
+        mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
+        mqtt_client.loop_start()
+        print(f"[MQTT] Connected to broker at {MQTT_BROKER}:{MQTT_PORT}")
+    except Exception as e:
+        print(f"[MQTT] Could not connect to broker: {e}")
+        return
+
+    # ========== Bộ nhớ chia sẻ và Queues ==========
+    manager = Manager()
+    latest_frames = manager.dict()
+    latest_boxes = manager.dict()  # Để lưu trữ các bounding box mới nhất
+    latest_lock = threading.Lock()
+    last_infer_ts = defaultdict(lambda: 0.0)
+    in_queue = Queue(maxsize=32)
+    out_queue = Queue(maxsize=32)
+
+    # A: receiver thread
+    receiver_args = (latest_frames, latest_lock, last_infer_ts, in_queue)
+    threading.Thread(target=receiver, args=receiver_args, daemon=True).start()
+
+    # B: collector thread
+    collector_args = (latest_boxes, latest_lock, out_queue)
+    threading.Thread(target=result_collector, args=collector_args, daemon=True).start()
+
+    # C: inference workers (processes)
+    workers = []
+    for i in range(NUM_WORKERS):
+        p = Process(target=worker_process, args=(i, in_queue, out_queue), daemon=True)
+        p.start()
+        workers.append(p)
+
+    # Thread cho LCD publisher
+    lcd_thread = threading.Thread(target=lcd_publisher, args=(mqtt_client,), daemon=True)
+    lcd_thread.start()
+
+    # D: hiển thị từ main process
+    print("[Server] Running. Press 'q' to quit.")
+    while True:
+        items = []
+        with latest_lock:
+            # Lấy bản sao của các frame mới nhất
+            items = list(latest_frames.items())
+
+        for cam_id, frame in items:
+            display_frame = frame.copy()
+            
+            # Lấy các box mới nhất cho camera này
+            with latest_lock:
+                boxes = latest_boxes.get(cam_id)
+
+            # Vẽ các box nếu có
+            if boxes:
+                display_frame = draw_boxes(display_frame, boxes)
+            win = f"Live - {cam_id}"
+            cv2.imshow(win, display_frame)
+
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+    cv2.destroyAllWindows()
+    mqtt_client.loop_stop()
+    mqtt_client.disconnect()
+    for p in workers:
+        p.terminate()
+
+
+if __name__ == "__main__":
+    main()
