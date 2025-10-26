@@ -93,7 +93,9 @@ def long_string(display, text='', num_line=1, num_cols=16):
         display.write_string(text.ljust(num_cols))
 def display_on_lcd(lcd, label, price, quantity):
     if lcd is None:
-        return
+        return 0
+
+    time_spent_sleeping = 0
     try:
         lcd.clear()
 
@@ -102,11 +104,31 @@ def display_on_lcd(lcd, label, price, quantity):
         quantity_len = len(quantity_str)
         label_cols = 16 - quantity_len
 
-        # Write quantity part to the right
         lcd.cursor_pos = (0, label_cols)
         lcd.write_string(quantity_str)
 
-        long_string(lcd, str(label), 1, label_cols)
+        text = str(label)
+        lcd.cursor_pos = (0, 0)
+
+        if len(text) > label_cols:
+            lcd.write_string(text[:label_cols])
+            sleep_duration = 0.6
+            time.sleep(sleep_duration)
+            time_spent_sleeping += sleep_duration
+
+            scroll_text = text + ' ' * label_cols
+            for i in range(len(scroll_text) - label_cols + 1):
+                lcd.cursor_pos = (0, 0)
+                lcd.write_string(scroll_text[i:i + label_cols])
+                sleep_duration = 0.2
+                time.sleep(sleep_duration)
+                time_spent_sleeping += sleep_duration
+            
+            sleep_duration = 1
+            time.sleep(sleep_duration)
+            time_spent_sleeping += sleep_duration
+        else:
+            lcd.write_string(text.ljust(label_cols))
 
         # ========== Line 2: Total: {giá tiền} ==========
         lcd.cursor_pos = (1, 0)
@@ -116,6 +138,8 @@ def display_on_lcd(lcd, label, price, quantity):
 
     except Exception as e:
         print(f"[ERROR] Could not write to LCD: {e}")
+    
+    return time_spent_sleeping
 
 
 def lcd_worker(q, lcd_obj):
@@ -124,8 +148,11 @@ def lcd_worker(q, lcd_obj):
         if item == (None, None, None):  # Sentinel for shutdown
             break
         label, price, quantity = item
-        display_on_lcd(lcd_obj, label, price, quantity)
-        time.sleep(LCD_DISPLAY_DURATION)
+        time_spent_scrolling = display_on_lcd(lcd_obj, label, price, quantity)
+        
+        remaining_sleep = LCD_DISPLAY_DURATION - time_spent_scrolling
+        if remaining_sleep > 0:
+            time.sleep(remaining_sleep)
     print("[INFO] LCD worker stopped.")
 
 
