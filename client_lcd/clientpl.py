@@ -205,8 +205,9 @@ def init_camera():
 def send_frame(sender, frame, quality):
     cam_id = f"{CAMERA_NAME}"
     ok, jpg_buffer = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
+    jpg_buffer_array = np.array(jpg_buffer).tobytes()
     if ok:
-        sender.send_jpg(cam_id, jpg_buffer.tobytes())
+        sender.send_jpg(cam_id, jpg_buffer_array)
 
 # ========== Vòng lặp chính ==========
 def main():
