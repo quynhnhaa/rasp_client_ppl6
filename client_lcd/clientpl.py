@@ -97,6 +97,12 @@ def display_on_lcd(lcd, label, price, quantity):
 
     time_spent_sleeping = 0
     try:
+        # ========== Line 2: Total: {giá tiền} ==========
+        lcd.cursor_pos = (1, 0)
+        total_price = price * quantity
+        price_str = f"{total_price:,.0f}VND"
+        lcd.write_string(price_str.rjust(16)[:16])
+        
         # ========== Line 1: <label> x<quantity> ==========
         quantity_str = f" x{quantity}"
         quantity_len = len(quantity_str)
@@ -127,12 +133,6 @@ def display_on_lcd(lcd, label, price, quantity):
             time_spent_sleeping += sleep_duration
         else:
             lcd.write_string(text.ljust(label_cols))
-
-        # ========== Line 2: Total: {giá tiền} ==========
-        lcd.cursor_pos = (1, 0)
-        total_price = price * quantity
-        price_str = f"{total_price:,.0f}VND"
-        lcd.write_string(price_str.rjust(16)[:16])
 
     except Exception as e:
         print(f"[ERROR] Could not write to LCD: {e}")
