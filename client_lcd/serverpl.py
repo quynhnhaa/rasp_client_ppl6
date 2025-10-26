@@ -15,6 +15,8 @@ from datetime import datetime
 from collections import defaultdict
 from multiprocessing import Process, Queue, Manager
 import json
+from ultralytics import YOLO
+import torch
 try:
     import paho.mqtt.client as mqtt
     MQTT_AVAILABLE = True
@@ -80,23 +82,7 @@ def product_sender_mqtt():
     client.disconnect()
 
 
-# ========== Hàm nhận diện (thay bằng model thật) ==========
-def detect_products(frame_rgb):
-    # Giả lập model: 50% có kết quả, 50% không có
-    if random.random() > 0.5:
-        h, w = frame_rgb.shape[:2]
-        return [(w//4, h//4, w//2, h//2, "product", 0.9)]
-    else:
-        return []  # Trả về danh sách rỗng khi không phát hiện gì
-
-
-def draw_boxes(frame, boxes):
-    for x1, y1, x2, y2, label, score in boxes:
-        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-        text = f"{label}:{score:.2f}"
-        cv2.putText(frame, text, (x1, y1 - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-    return frame
+# ========== Hàm nhận diện (đã được tích hợp vào worker) ==========
 
 
 def save_frame(cam_id, frame, boxes):
@@ -145,82 +131,77 @@ def receiver(latest_frames, latest_lock, last_infer_ts, in_queue):
 # ========== Worker Process: Nhận diện ==========
 def worker_process(worker_id, in_q, out_q):
     print(f"[Worker-{worker_id}] Started")
+    # device = 'mps' if torch.backends.mps.is_available() else 'cuda' if torch.cuda.is_available() else 'cpu'
+    device = 'cpu'
+    model = YOLO("best_conf03_iou045.pt")
+
     while True:
         cam_id, frame = in_q.get()
         try:
-            # Worker thực hiện nhận diện
-            boxes = detect_products(frame)
-
-            # Worker cũng thực hiện vẽ và lưu ảnh để giảm tải cho luồng chính
-            if boxes:
-                annotated = draw_boxes(frame.copy(), boxes)
-                save_frame(cam_id, annotated, boxes)
-
-            # Chỉ gửi lại kết quả (nhẹ) cho luồng chính
-            out_q.put((cam_id, boxes))
+            results = model.predict(
+                source=frame,
+                conf=0.3,
+                iou=0.45,
+                device=device,
+                verbose=False
+            )
+            annotated_frame = results[0].plot()
+            out_q.put((cam_id, annotated_frame))
         except Exception as e:
             print(f"[Worker-{worker_id}] Error: {e}")
 
 
 # ========== Thread B: Nhận kết quả từ worker ==========
-def result_collector(latest_boxes, latest_lock, out_queue):
+def result_collector(latest_annotated_frames, latest_lock, out_queue):
     while True:
         try:
-            cam_id, boxes = out_queue.get()
-            # Cập nhật boxes mới nhất cho vòng lặp hiển thị
+            cam_id, annotated_frame = out_queue.get()
             with latest_lock:
-                latest_boxes[cam_id] = boxes
+                latest_annotated_frames[cam_id] = annotated_frame
         except Exception as e:
             print(f"[Collector] Error processing queue item: {e}")
 
 
 # ========== Main ==========
 def main():
-    # ========== Bộ nhớ chia sẻ và Queues ==========
     manager = Manager()
     latest_frames = manager.dict()
-    latest_boxes = manager.dict()  # Để lưu trữ các bounding box mới nhất
+    latest_annotated_frames = manager.dict()
     latest_lock = threading.Lock()
     last_infer_ts = defaultdict(lambda: 0.0)
+    prev_time = defaultdict(float)
     in_queue = Queue(maxsize=32)
     out_queue = Queue(maxsize=32)
 
-    # A: receiver thread
     receiver_args = (latest_frames, latest_lock, last_infer_ts, in_queue)
     threading.Thread(target=receiver, args=receiver_args, daemon=True).start()
 
-    # B: collector thread
-    collector_args = (latest_boxes, latest_lock, out_queue)
+    collector_args = (latest_annotated_frames, latest_lock, out_queue)
     threading.Thread(target=result_collector, args=collector_args, daemon=True).start()
 
-    # C: inference workers (processes)
     workers = []
     for i in range(NUM_WORKERS):
         p = Process(target=worker_process, args=(i, in_queue, out_queue), daemon=True)
         p.start()
         workers.append(p)
         
-    # Start MQTT product sender thread
     threading.Thread(target=product_sender_mqtt, daemon=True).start()
 
-    # D: hiển thị từ main process
     print("[Server] Running. Press 'q' to quit.")
     while True:
         items = []
         with latest_lock:
-            # Lấy bản sao của các frame mới nhất
             items = list(latest_frames.items())
 
         for cam_id, frame in items:
             display_frame = frame.copy()
             
-            # Lấy các box mới nhất cho camera này
             with latest_lock:
-                boxes = latest_boxes.get(cam_id)
+                annotated_frame = latest_annotated_frames.get(cam_id)
 
-            # Vẽ các box nếu có
-            if boxes:
-                display_frame = draw_boxes(display_frame, boxes)
+            if annotated_frame is not None:
+                display_frame = annotated_frame
+            
             win = f"Live - {cam_id}"
             cv2.imshow(win, display_frame)
 

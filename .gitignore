@@ -9,3 +9,4 @@ videos/
 *.mp4
 *.mov
 detections/
+*.pt

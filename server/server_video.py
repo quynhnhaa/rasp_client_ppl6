@@ -7,7 +7,7 @@ import os
 # ========== Cấu hình ==========
 FRAME_SIZE = (640, 640)
 FPS = 20
-DURATION = 25  # giây
+DURATION = 30  # giây
 SAVE_DIR = "./video_test"
 
 # ========== Tạo file video với timestamp ==========

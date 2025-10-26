@@ -13,6 +13,8 @@ import numpy as np
 import imagezmq
 from picamera2 import Picamera2
 import json
+import queue
+import threading
 
 try:
     from RPLCD.i2c import CharLCD
@@ -44,28 +46,51 @@ CONNECT_TO = f"tcp://{CONFIG['server_ip']}:{CONFIG['port']}"
 MQTT_BROKER = "broker.hivemq.com"
 MQTT_PORT = 1883
 MQTT_TOPIC = "pbl6/products"
+LCD_DISPLAY_DURATION = 3 # seconds to display each message
 
 # ========== Khởi tạo LCD ==========
 def init_lcd():
     if not RPLCD_AVAILABLE:
         return None
     try:
-        # Thử các địa chỉ I2C phổ biến
-        for address in [0x27, 0x3f]:
-            try:
-                lcd = CharLCD('PCF8574', address)
-                lcd.clear()
-                lcd.write_string("Waiting for...")
-                print(f"[INFO] LCD initialized at address {hex(address)}.")
-                return lcd
-            except Exception:
-                continue
-        raise IOError("Could not find LCD at common I2C addresses.")
-    except Exception as e:
-        print(f"[ERROR] Could not initialize LCD: {e}")
+        lcd = CharLCD('PCF8574', 0x27)
+        lcd.clear()
+        lcd.write_string("Waiting for...")
+        print(f"[INFO] LCD initialized at address {hex(0x27)}.")
+        return lcd
+    except Exception:
+        print("[ERROR] Could not initialize LCD.")
         return None
 
 # ========== Hiển thị trên LCD ==========
+def long_string(display, text='', num_line=1, num_cols=16):
+    """ 
+    Hiển thị chuỗi dài theo kiểu:
+    - Nếu chuỗi ngắn hơn num_cols → in thẳng
+    - Nếu chuỗi dài hơn num_cols → in 16 ký tự đầu, dừng 1s, rồi cuộn từ PHẢI sang TRÁI
+    """
+    row = num_line - 1  # RPLCD dùng index bắt đầu từ 0
+
+    if len(text) > num_cols:
+        # In 16 ký tự đầu tiên trước
+        display.cursor_pos = (row, 0)
+        display.write_string(text[:num_cols].ljust(num_cols))
+        time.sleep(0.6)
+
+        # Thêm khoảng trắng để cuộn mượt
+        scroll_text = text + ' ' * num_cols
+
+        # Cuộn từ phải sang trái
+        for i in range(len(scroll_text) - num_cols + 1):
+            display.cursor_pos = (row, 0)
+            display.write_string(scroll_text[i:i + num_cols])
+            time.sleep(0.2)
+
+        time.sleep(1)
+    else:
+        # Chuỗi ngắn, in thẳng
+        display.cursor_pos = (row, 0)
+        display.write_string(text.ljust(num_cols))
 def display_on_lcd(lcd, product, price):
     if lcd is None:
         return
@@ -81,6 +106,15 @@ def display_on_lcd(lcd, product, price):
     except Exception as e:
         print(f"[ERROR] Could not write to LCD: {e}")
 
+def lcd_worker(q, lcd_obj):
+    while True:
+        product, price = q.get()
+        if product is None and price is None: # Sentinel for shutdown
+            break
+        display_on_lcd(lcd_obj, product, price)
+        time.sleep(LCD_DISPLAY_DURATION)
+    print("[INFO] LCD worker stopped.")
+
 # ========== MQTT Callbacks ==========
 def on_connect(client, userdata, flags, rc):
     if rc == 0:
@@ -90,17 +124,21 @@ def on_connect(client, userdata, flags, rc):
         print(f"[MQTT] Failed to connect, return code {rc}")
 
 def on_message(client, userdata, msg):
-    lcd = userdata.get('lcd')
+    q = userdata.get('queue')
     print(f"[MQTT] Received message on topic {msg.topic}")
     try:
         data = json.loads(msg.payload.decode())
         product = data.get("product", "N/A")
         price = data.get("price", 0)
-        display_on_lcd(lcd, product, price)
+        if q:
+            q.put((product, price))
+        else:
+            print("[WARNING] LCD queue not available.")
     except json.JSONDecodeError:
         print("[WARNING] Received invalid JSON from MQTT.")
     except Exception as e:
         print(f"[ERROR] Error processing MQTT message: {e}")
+    
 
 # ========== Khởi tạo camera ==========
 def init_camera():
@@ -127,9 +165,14 @@ def main():
     lcd = init_lcd()
     
     # Setup MQTT Client
+    lcd_queue = queue.Queue()
+    lcd_worker_thread = threading.Thread(target=lcd_worker, args=(lcd_queue, lcd), daemon=True)
+    lcd_worker_thread.start()
+    print("[INFO] LCD worker thread started.")
+
     mqtt_client = None
     if MQTT_AVAILABLE:
-        userdata = {'lcd': lcd}
+        userdata = {'queue': lcd_queue} # Pass the queue to MQTT userdata
         mqtt_client = mqtt.Client()
         mqtt_client.user_data_set(userdata)
         mqtt_client.on_connect = on_connect
@@ -188,6 +231,11 @@ def main():
         if mqtt_client:
             mqtt_client.loop_stop()
             mqtt_client.disconnect()
+        if lcd_queue and lcd_worker_thread:
+            lcd_queue.put((None, None)) # Signal worker to stop
+            lcd_worker_thread.join(timeout=1) # Wait for worker to finish
+            if lcd_worker_thread.is_alive():
+                print("[WARNING] LCD worker thread did not terminate gracefully.")
         if lcd:
             lcd.close(clear=True)
         cam.stop()
