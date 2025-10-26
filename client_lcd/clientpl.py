@@ -107,33 +107,12 @@ def display_on_lcd(lcd, label, price, quantity):
         lcd.write_string(quantity_str)
 
         long_string(lcd, str(label), 1, label_cols)
-        # # Handle label part (with scrolling for long text)
-        # text = str(label)
-        # lcd.cursor_pos = (0, 0) # Set cursor for label part
-
-        # if len(text) > label_cols:
-        #     # Display initial part of the text
-        #     lcd.write_string(text[:label_cols])
-        #     time.sleep(0.6)
-
-        #     # Prepare for scrolling
-        #     scroll_text = text + ' ' * label_cols
-
-        #     # Scroll the text
-        #     for i in range(len(scroll_text) - label_cols + 1):
-        #         lcd.cursor_pos = (0, 0)
-        #         lcd.write_string(scroll_text[i:i + label_cols])
-        #         time.sleep(0.2)
-        #     time.sleep(1)
-        # else:
-        #     # Display short text
-        #     lcd.write_string(text.ljust(label_cols))
 
         # ========== Line 2: Total: {giá tiền} ==========
         lcd.cursor_pos = (1, 0)
         total_price = price * quantity
-        price_str = f"Total: {total_price:,.0f}VND"
-        lcd.write_string(price_str.ljust(16)[:16])
+        price_str = f"{total_price:,.0f}VND"
+        lcd.write_string(price_str.rjust(16)[:16])
 
     except Exception as e:
         print(f"[ERROR] Could not write to LCD: {e}")
