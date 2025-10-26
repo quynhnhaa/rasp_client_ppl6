@@ -36,7 +36,13 @@ MQTT_PORT = 1883
 MQTT_TOPIC = "pbl6/products"
 
 # ========== Thread gửi thông tin sản phẩm qua MQTT ==========
-PRODUCTS = ["Sting", "Coca", "Pepsi", "Sua", "Banh"]
+PRODUCTS = {
+    "Sting": 10000,
+    "Coca": 8000,
+    "Pepsi": 8000,
+    "Sua": 7000,
+    "Banh": 5000
+}
 
 def product_sender_mqtt():
     if not MQTT_AVAILABLE:
@@ -60,9 +66,15 @@ def product_sender_mqtt():
             time.sleep(sleep_time)
 
             # Prepare data
-            product_name = random.choice(PRODUCTS)
-            total_price = round(random.uniform(10000, 50000))
-            message = {"product": product_name, "price": total_price}
+            label = random.choice(list(PRODUCTS.keys()))
+            price = PRODUCTS[label]
+            quantity = random.randint(1, 5)
+            
+            message = {
+                "label": label,
+                "price": price,
+                "quantity": quantity
+            }
             payload = json.dumps(message)
 
             # Send data

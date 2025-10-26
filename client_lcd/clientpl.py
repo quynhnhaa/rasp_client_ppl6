@@ -91,29 +91,33 @@ def long_string(display, text='', num_line=1, num_cols=16):
         # Chuỗi ngắn, in thẳng
         display.cursor_pos = (row, 0)
         display.write_string(text.ljust(num_cols))
-def display_on_lcd(lcd, product, price):
+def display_on_lcd(lcd, label, price, quantity):
     if lcd is None:
         return
     try:
         lcd.clear()
         # Dòng 1: Tên sản phẩm
         lcd.cursor_pos = (0, 0)
-        lcd.write_string(str(product)[:16])
-        # Dòng 2: Giá tiền
+        lcd.write_string(str(label)[:16])
+        # Dòng 2: Số lượng và Tổng tiền
         lcd.cursor_pos = (1, 0)
-        price_str = f"Total: {price:,.0f} VND"
-        lcd.write_string(price_str[:16])
+        total_price = price * quantity
+        info_str = f"Qty:{quantity} {total_price:,.0f}VND"
+        lcd.write_string(info_str[:16])
     except Exception as e:
         print(f"[ERROR] Could not write to LCD: {e}")
 
+
 def lcd_worker(q, lcd_obj):
     while True:
-        product, price = q.get()
-        if product is None and price is None: # Sentinel for shutdown
+        item = q.get()
+        if item == (None, None, None):  # Sentinel for shutdown
             break
-        display_on_lcd(lcd_obj, product, price)
+        label, price, quantity = item
+        display_on_lcd(lcd_obj, label, price, quantity)
         time.sleep(LCD_DISPLAY_DURATION)
     print("[INFO] LCD worker stopped.")
+
 
 # ========== MQTT Callbacks ==========
 def on_connect(client, userdata, flags, rc):
@@ -123,15 +127,17 @@ def on_connect(client, userdata, flags, rc):
     else:
         print(f"[MQTT] Failed to connect, return code {rc}")
 
+
 def on_message(client, userdata, msg):
     q = userdata.get('queue')
     print(f"[MQTT] Received message on topic {msg.topic}")
     try:
         data = json.loads(msg.payload.decode())
-        product = data.get("product", "N/A")
+        label = data.get("label", "N/A")
         price = data.get("price", 0)
+        quantity = data.get("quantity", 1)  # Default to 1 if not provided
         if q:
-            q.put((product, price))
+            q.put((label, price, quantity))
         else:
             print("[WARNING] LCD queue not available.")
     except json.JSONDecodeError:
@@ -232,7 +238,7 @@ def main():
             mqtt_client.loop_stop()
             mqtt_client.disconnect()
         if lcd_queue and lcd_worker_thread:
-            lcd_queue.put((None, None)) # Signal worker to stop
+            lcd_queue.put((None, None, None)) # Signal worker to stop
             lcd_worker_thread.join(timeout=1) # Wait for worker to finish
             if lcd_worker_thread.is_alive():
                 print("[WARNING] LCD worker thread did not terminate gracefully.")
