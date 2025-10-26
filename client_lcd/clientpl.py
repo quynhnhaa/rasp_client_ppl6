@@ -97,8 +97,6 @@ def display_on_lcd(lcd, label, price, quantity):
 
     time_spent_sleeping = 0
     try:
-        lcd.clear()
-
         # ========== Line 1: <label> x<quantity> ==========
         quantity_str = f" x{quantity}"
         quantity_len = len(quantity_str)
@@ -143,16 +141,28 @@ def display_on_lcd(lcd, label, price, quantity):
 
 
 def lcd_worker(q, lcd_obj):
+    # Clear screen once at the start
+    if lcd_obj:
+        lcd_obj.clear()
+
     while True:
         item = q.get()
         if item == (None, None, None):  # Sentinel for shutdown
             break
         label, price, quantity = item
+        
+        # Display item
         time_spent_scrolling = display_on_lcd(lcd_obj, label, price, quantity)
         
+        # Wait for the rest of the duration
         remaining_sleep = LCD_DISPLAY_DURATION - time_spent_scrolling
         if remaining_sleep > 0:
             time.sleep(remaining_sleep)
+
+        # Clear screen after displaying
+        if lcd_obj:
+            lcd_obj.clear()
+            
     print("[INFO] LCD worker stopped.")
 
 
