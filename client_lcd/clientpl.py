@@ -97,8 +97,9 @@ def display_on_lcd(lcd, label, price, quantity):
     try:
         lcd.clear()
         # Dòng 1: Tên sản phẩm
-        lcd.cursor_pos = (0, 0)
-        lcd.write_string(str(label)[:16])
+        long_string(lcd, text=label, num_line=1, num_cols=16)
+        # lcd.cursor_pos = (0, 0)
+        # lcd.write_string(str(label)[:16])
         # Dòng 2: Số lượng và Tổng tiền
         lcd.cursor_pos = (1, 0)
         total_price = price * quantity
