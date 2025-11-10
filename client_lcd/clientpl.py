@@ -104,7 +104,7 @@ def display_on_lcd(lcd, label, price, quantity):
         lcd.write_string(price_str.rjust(16)[:16])
         
         # ========== Line 1: <label> x<quantity> ==========
-        quantity_str = f" x{quantity}"
+        quantity_str = f" x{quantity}" if quantity > 1 else ""
         quantity_len = len(quantity_str)
         label_cols = 16 - quantity_len
 
