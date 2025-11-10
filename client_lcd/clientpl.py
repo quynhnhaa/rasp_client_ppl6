@@ -99,7 +99,7 @@ def display_on_lcd(lcd, label, price, quantity):
     try:
         # ========== Line 2: Total: {giá tiền} ==========
         lcd.cursor_pos = (1, 0)
-        total_price = price * quantity
+        total_price = price * quantity if quantity > 1 else price
         price_str = f"{total_price:,.0f}VND"
         lcd.write_string(price_str.rjust(16)[:16])
         
