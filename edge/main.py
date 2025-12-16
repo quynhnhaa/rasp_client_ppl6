@@ -19,7 +19,7 @@ CONFIG = {
     "server_port": 5555,
     "camera_name": "raspi_cam",
     "camera_resolution": (640, 640),
-    "queue_size": 5,
+    "queue_size": 2, # GIẢM KÍCH THƯỚC QUEUE để tiết kiệm RAM
     # --- Cấu hình cho model NCNN ---
     "input_size": (640, 640), # Kích thước input của model
     "conf_threshold": 0.25,   # Ngưỡng tin cậy để giữ lại một box
@@ -116,10 +116,10 @@ def inference_worker(net: ncnn.Net, frame_queue: Queue, result_queue: Queue):
         frame = frame_queue.get()  # block đến khi có frame
 
         # 1. Pre-processing
-        img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        img_resized = cv2.resize(img_rgb, (input_w, input_h))
-        mat_in = ncnn.Mat.from_pixels(img_resized, ncnn.Mat.PixelType.PIXEL_RGB, input_w, input_h)
-        mat_in.substract_mean_normalize([], [1/255.0, 1/255.0, 1/255.0])
+        # Frame từ Picamera2 đã là RGB, không cần cvtColor
+        img_resized = cv2.resize(frame, (input_w, input_h))
+        mat_in = ncnn.Mat.from_pixels_resize(frame, ncnn.Mat.PixelType.PIXEL_RGB, frame.shape[1], frame.shape[0], input_w, input_h)
+        mat_in.substract_mean_normalize([0.0, 0.0, 0.0], [1/255.0, 1/255.0, 1/255.0])
 
         # 2. Inference
         with net.create_extractor() as ex:
@@ -168,7 +168,10 @@ def sender_worker(result_queue: Queue, server_address: str, camera_name: str = "
 if __name__ == "__main__":
     # 1. Khởi tạo camera
     picam2 = Picamera2()
-    config = picam2.create_preview_configuration(main={"size": CONFIG["camera_resolution"]})
+    # Yêu cầu camera xuất ra định dạng RGB 3 kênh để tránh chuyển đổi sau này
+    config = picam2.create_preview_configuration(
+        main={"size": CONFIG["camera_resolution"], "format": "RGB888"}
+    )
     picam2.configure(config)
     picam2.start()
 
