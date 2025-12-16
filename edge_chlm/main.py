@@ -202,7 +202,7 @@ class YOLO11NCNN:
             class_scores = row[4:]
 
             cls_id = int(np.argmax(class_scores))
-            score = float(class_scores[cls_id])
+            score = float(np.max(class_scores)) # SỬA LỖI: Lấy giá trị score lớn nhất, không phải giá trị tại chỉ số cls_id
 
             if score < self.score_thresh:
                 continue
