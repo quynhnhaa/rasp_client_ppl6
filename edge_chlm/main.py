@@ -169,7 +169,6 @@ class YOLO11NCNN:
         mat_in.substract_mean_normalize(mean_vals, norm_vals)
 
         ex = self.net.create_extractor()
-        ex.set_num_threads(2)
         ex.input(self.input_blob_name, mat_in)
 
         all_preds = []
