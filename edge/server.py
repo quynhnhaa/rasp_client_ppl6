@@ -11,6 +11,7 @@ def main():
     image_hub = imagezmq.ImageHub()
 
     print("[INFO] Server đang chạy. Đang chờ kết nối từ client...")
+    connected_clients = set()
 
     try:
         # Vòng lặp vô tận để nhận và hiển thị các khung hình
@@ -18,6 +19,11 @@ def main():
             # Nhận tên camera và khung hình từ client
             # Lệnh này sẽ block cho đến khi có ảnh mới
             cam_name, frame = image_hub.recv_image()
+
+            # In thông báo nếu đây là client mới
+            if cam_name not in connected_clients:
+                print(f"[INFO] Nhan duoc ket noi moi tu client: {cam_name}")
+                connected_clients.add(cam_name)
 
             # Hiển thị khung hình trong một cửa sổ có tên là tên của camera
             cv2.imshow(cam_name, frame)

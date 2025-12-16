@@ -156,11 +156,18 @@ def inference_worker(net: ncnn.Net, frame_queue: Queue, result_queue: Queue):
 # Thread 3: Gửi qua imagezmq
 # ---------------------
 def sender_worker(result_queue: Queue, server_address: str, camera_name: str = "raspi_cam"):
+    print(f"[INFO] Dang ket noi den server tai {server_address}...")
     sender = imagezmq.ImageSender(connect_to=server_address)
+    
+    first_frame_sent = False
     while True:
         frame = result_queue.get()  # block đến khi có dữ liệu
         # frame ở đây là numpy array (BGR), imagezmq hỗ trợ trực tiếp
         sender.send_image(camera_name, frame)
+
+        if not first_frame_sent:
+            print("[INFO] Client da ket noi va gui frame dau tien toi server thanh cong!")
+            first_frame_sent = True
 
 # ---------------------
 # Main
