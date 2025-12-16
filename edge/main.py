@@ -15,7 +15,7 @@ import numpy as np
 # ---------------------
 CONFIG = {
     "model_name": os.getenv("MODEL_NAME", "no_mosaic_sgd_0284.pt"),
-    "server_ip": os.getenv("SERVER_IP", "127.0.0.1"),
+    "server_ip": os.getenv("server_ip", "127.0.0.1"),
     "server_port": 5555,
     "camera_name": "raspi_cam",
     "camera_resolution": (640, 640),
