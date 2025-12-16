@@ -19,7 +19,7 @@ CONFIG = {
     "server_port": 5555,
     "camera_name": "raspi_cam",
     "camera_resolution": (640, 640),
-    "queue_size": 2, # GIẢM KÍCH THƯỚC QUEUE để tiết kiệm RAM
+    "queue_size": 1, # GIẢM KÍCH THƯỚC QUEUE để tiết kiệm RAM
     # --- Cấu hình cho model NCNN ---
     "input_size": (640, 640), # Kích thước input của model
     "conf_threshold": 0.25,   # Ngưỡng tin cậy để giữ lại một box
