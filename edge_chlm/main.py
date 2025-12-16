@@ -25,17 +25,12 @@ INPUT_SIZE = (320, 320)
 
 # Đọc tên lớp từ file
 try:
-    with open(CLASSES_PATH, "r", encoding="utf-8") as f:
-        # File class_to_id.txt có định dạng JSON, cần đọc và parse
-        # Thêm dấu ngoặc nhọn để tạo thành một JSON string hợp lệ
-        json_string = "{" + f.read() + "}"
-        data = json.loads(json_string)
-        class_map = data.get("class_to_id", {})
-        
-        # Sắp xếp tên lớp theo giá trị (ID) để đảm bảo đúng thứ tự
-        # Ví dụ: {"B": 1, "A": 0} -> [("A", 0), ("B", 1)] -> ["A", "B"]
-        sorted_items = sorted(class_map.items(), key=lambda item: item[1])
-        CLASS_NAMES = [item[0] for item in sorted_items]
+    CLASS_NAMES = []
+    with open(CLASSES_PATH, "r", encoding="utf-8") as f: # Đảm bảo đọc UTF-8
+        for line in f:
+            class_name = line.strip() # Xóa khoảng trắng và ký tự xuống dòng
+            if class_name: # Chỉ thêm nếu dòng không rỗng
+                CLASS_NAMES.append(class_name)
 
     NUM_CLASSES = len(CLASS_NAMES)
     print(f"[INFO] Đã đọc {NUM_CLASSES} lớp từ: {CLASSES_PATH}")
