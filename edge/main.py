@@ -19,13 +19,12 @@ CONFIG = {
     "server_port": 5555,
     "camera_name": "raspi_cam",
     "camera_resolution": (640, 640),
-    "queue_size": 1, # GIẢM KÍCH THƯỚC QUEUE để tiết kiệm RAM
+    "queue_size": 2, # GIẢM KÍCH THƯỚC QUEUE để tiết kiệm RAM
     # --- Cấu hình cho model NCNN ---
     "input_size": (640, 640), # Kích thước input của model
     "conf_threshold": 0.25,   # Ngưỡng tin cậy để giữ lại một box
     "nms_threshold": 0.45,    # Ngưỡng IoU cho Non-Maximum Suppression
     "class_names": ["product"], # Thay bằng danh sách tên class của bạn
-    "jpeg_quality": 40,       # Chất lượng nén JPEG (0-100)
 }
 CONFIG["server_address"] = f"tcp://{CONFIG['server_ip']}:{CONFIG['server_port']}"
 
@@ -163,12 +162,8 @@ def sender_worker(result_queue: Queue, server_address: str, camera_name: str = "
     first_frame_sent = False
     while True:
         frame = result_queue.get()  # block đến khi có dữ liệu
-
-        # Nén frame thành định dạng JPEG trước khi gửi
-        # Frame từ Picamera2 là RGB, nhưng OpenCV imencode mặc định xử lý BGR tốt hơn
-        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-        ret, jpg_buffer = cv2.imencode(".jpg", frame_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), CONFIG["jpeg_quality"]])
-        sender.send_jpg(camera_name, jpg_buffer)
+        # frame ở đây là numpy array (BGR), imagezmq hỗ trợ trực tiếp
+        sender.send_image(camera_name, frame)
 
         if not first_frame_sent:
             print("[INFO] Client da ket noi va gui frame dau tien toi server thanh cong!")
