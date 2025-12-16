@@ -9,4 +9,5 @@ videos/
 *.mp4
 *.mov
 detections/
-*.pt
+best_conf03_iou045.pt
+server_test/
