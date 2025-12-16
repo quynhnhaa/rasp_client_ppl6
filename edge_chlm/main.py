@@ -40,7 +40,7 @@ except (FileNotFoundError, json.JSONDecodeError) as e:
     NUM_CLASSES = 1
 
 # Ngưỡng lọc
-SCORE_THRESH = 0.25
+SCORE_THRESH = 0.45
 NMS_THRESH   = 0.45
 
 # Server nhận kết quả
@@ -311,11 +311,11 @@ def main():
             frame = picam2.capture_array()  # numpy BGR
             detections = yolo.detect(frame)
 
-            # In ra console để debug
-            if detections:
-                print(f"{len(detections)} detections:")
-                for d in detections:
-                    print(d)
+            # # In ra console để debug (bỏ comment nếu muốn debug)
+            # if detections:
+            #     print(f"{len(detections)} detections:")
+            #     for d in detections:
+            #         print(d)
 
             # Gửi lên server (có thể chỉ gửi khi có detection nếu muốn)
             send_detections_to_server(detections, SERVER_IP, SERVER_PORT)
