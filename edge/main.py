@@ -5,9 +5,10 @@ from threading import Thread
 from queue import Queue
 
 from picamera2 import Picamera2
-from ultralytics import YOLO
 import imagezmq
-import cv2  # dùng nếu cần chuyển BGR/RGB, vẽ box, etc.
+import cv2
+import ncnn
+import numpy as np
 
 # ---------------------
 # CONFIG
@@ -19,6 +20,11 @@ CONFIG = {
     "camera_name": "raspi_cam",
     "camera_resolution": (640, 640),
     "queue_size": 5,
+    # --- Cấu hình cho model NCNN ---
+    "input_size": (640, 640), # Kích thước input của model
+    "conf_threshold": 0.25,   # Ngưỡng tin cậy để giữ lại một box
+    "nms_threshold": 0.45,    # Ngưỡng IoU cho Non-Maximum Suppression
+    "class_names": ["product"], # Thay bằng danh sách tên class của bạn
 }
 CONFIG["server_address"] = f"tcp://{CONFIG['server_ip']}:{CONFIG['server_port']}"
 
@@ -26,27 +32,25 @@ CONFIG["server_address"] = f"tcp://{CONFIG['server_ip']}:{CONFIG['server_port']}
 # ---------------------
 # Hàm load NCNN model
 # ---------------------
-def load_ncnn_model():
+def load_ncnn_model(model_name):
     model_name = CONFIG["model_name"]
     
     if not os.path.isfile(model_name):
         print(f"[ERROR] Khong tim thay file mo hinh: {model_name}")
         raise FileNotFoundError(model_name)
-
+        
     export_dir = os.path.splitext(model_name)[0] + "_ncnn_model"
+    param_path = os.path.join(export_dir, "model.ncnn.param")
+    bin_path = os.path.join(export_dir, "model.ncnn.bin")
 
-    if not os.path.exists(export_dir):
-        print(f"[INFO] Chua tim thay {export_dir}. Bat dau export NCNN...")
-        model = YOLO(model_name)
-        model.export(format="ncnn")
-        print(f"[DONE] Export NCNN thanh cong tai: {export_dir}")
-    else:
-        print(f"[INFO] Da ton tai NCNN model tai: {export_dir}")
+    if not (os.path.exists(param_path) and os.path.exists(bin_path)):
+        raise FileNotFoundError(f"Khong tim thay file .param hoac .bin trong: {export_dir}")
 
-    print(f"[INFO] Loading NCNN model tu thu muc: {export_dir}")
-    ncnn_model = YOLO(export_dir)
-    print("[DONE] Load NCNN model thanh cong")
-    return ncnn_model
+    net = ncnn.Net()
+    net.load_param(param_path)
+    net.load_model(bin_path)
+    print(f"[INFO] Da load NCNN model tu: {export_dir}")
+    return net
 
 # ---------------------
 # Thread 1: Camera
@@ -63,21 +67,76 @@ def camera_worker(picam2, frame_queue: Queue):
 # ---------------------
 # Thread 2: Inference
 # ---------------------
-def inference_worker(model: YOLO, frame_queue: Queue, result_queue: Queue):
+def postprocess(frame, outputs, conf_threshold, nms_threshold):
+    h, w, _ = frame.shape
+    boxes, scores, class_ids = [], [], []
+
+    # YOLOv8 NCNN output format: [x, y, w, h, class_prob_0, class_prob_1, ...]
+    for detection in outputs.T:
+        # Lấy class có xác suất cao nhất
+        class_scores = detection[4:]
+        class_id = np.argmax(class_scores)
+        max_score = class_scores[class_id]
+
+        if max_score > conf_threshold:
+            # Chuyển đổi tọa độ từ [center_x, center_y, width, height] về [x1, y1, x2, y2]
+            cx, cy, width, height = detection[:4]
+            x1 = int((cx - width / 2) * w)
+            y1 = int((cy - height / 2) * h)
+            x2 = int((cx + width / 2) * w)
+            y2 = int((cy + height / 2) * h)
+
+            boxes.append([x1, y1, x2 - x1, y2 - y1]) # cv2.dnn.NMSBoxes expects [x, y, w, h]
+            scores.append(float(max_score))
+            class_ids.append(class_id)
+
+    # Áp dụng Non-Maximum Suppression
+    indices = cv2.dnn.NMSBoxes(boxes, scores, conf_threshold, nms_threshold)
+
+    final_boxes = []
+    if len(indices) > 0:
+        for i in indices.flatten():
+            x, y, w, h = boxes[i]
+            final_boxes.append({
+                "box": (x, y, x + w, y + h),
+                "score": scores[i],
+                "class_id": class_ids[i]
+            })
+    return final_boxes
+
+def inference_worker(net: ncnn.Net, frame_queue: Queue, result_queue: Queue):
     # FPS calculation variables
     start_time = time.time()
     frame_count = 0
     fps = 0
 
+    input_w, input_h = CONFIG["input_size"]
+
     while True:
         frame = frame_queue.get()  # block đến khi có frame
 
-        # Tùy camera config mà frame có thể là RGB/BGR, chỉnh lại nếu cần
-        # results = model(frame, imgsz=640)[0]
-        results = model(frame, verbose=False)[0]   # đơn giản, verbose=False để tắt log của YOLO
+        # 1. Pre-processing
+        img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        img_resized = cv2.resize(img_rgb, (input_w, input_h))
+        mat_in = ncnn.Mat.from_pixels(img_resized, ncnn.Mat.PixelType.PIXEL_RGB, input_w, input_h)
+        mat_in.substract_mean_normalize([], [1/255.0, 1/255.0, 1/255.0])
 
-        # Vẽ bounding box lên frame (tuỳ bạn, có thể gửi raw + bbox riêng)
-        annotated_frame = results.plot()  # trả về numpy array BGR
+        # 2. Inference
+        with net.create_extractor() as ex:
+            ex.input("images", mat_in)
+            _, out = ex.extract("output0")
+            outputs = np.array(out)
+
+        # 3. Post-processing
+        detections = postprocess(frame, outputs, CONFIG["conf_threshold"], CONFIG["nms_threshold"])
+        annotated_frame = frame.copy()
+        for det in detections:
+            x1, y1, x2, y2 = det["box"]
+            score = det["score"]
+            class_id = det["class_id"]
+            label = f"{CONFIG['class_names'][class_id]}: {score:.2f}"
+            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            cv2.putText(annotated_frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
         # Calculate and draw FPS
         frame_count += 1
@@ -114,7 +173,7 @@ if __name__ == "__main__":
     picam2.start()
 
     # 2. Load YOLO NCNN model
-    model = load_ncnn_model()
+    model = load_ncnn_model(CONFIG["model_name"])
 
     # 3. Tạo queue cho pipeline
     frame_queue = Queue(maxsize=CONFIG["queue_size"])   # giới hạn để tránh tràn RAM
