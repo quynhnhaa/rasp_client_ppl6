@@ -123,8 +123,8 @@ def inference_worker(net: ncnn.Net, frame_queue: Queue, result_queue: Queue):
 
         # 2. Inference
         with net.create_extractor() as ex:
-            ex.input("images", mat_in)
-            _, out = ex.extract("output0")
+            ex.input("in0", mat_in)      # SỬA LẠI: "images" -> "in0" (hoặc tên input đúng)
+            _, out = ex.extract("out0")  # SỬA LẠI: "output0" -> "out0" (hoặc tên output đúng)
             outputs = np.array(out)
 
         # 3. Post-processing
