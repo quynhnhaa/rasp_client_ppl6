@@ -18,13 +18,14 @@ CONFIG = {
     "server_ip": os.getenv("server_ip", "127.0.0.1"),
     "server_port": 5555,
     "camera_name": "raspi_cam",
-    "camera_resolution": (640, 640),
+    "camera_resolution": (320, 320),
     "queue_size": 2, # GIẢM KÍCH THƯỚC QUEUE để tiết kiệm RAM
     # --- Cấu hình cho model NCNN ---
-    "input_size": (640, 640), # Kích thước input của model
+    "input_size": (320, 320), # Kích thước input của model
     "conf_threshold": 0.25,   # Ngưỡng tin cậy để giữ lại một box
     "nms_threshold": 0.45,    # Ngưỡng IoU cho Non-Maximum Suppression
     "class_names": ["product"], # Thay bằng danh sách tên class của bạn
+    "jpeg_quality": 30,       # Chất lượng nén JPEG (0-100)
 }
 CONFIG["server_address"] = f"tcp://{CONFIG['server_ip']}:{CONFIG['server_port']}"
 
@@ -117,15 +118,14 @@ def inference_worker(net: ncnn.Net, frame_queue: Queue, result_queue: Queue):
 
         # 1. Pre-processing
         # Frame từ Picamera2 đã là RGB, không cần cvtColor
-        img_resized = cv2.resize(frame, (input_w, input_h))
         mat_in = ncnn.Mat.from_pixels_resize(frame, ncnn.Mat.PixelType.PIXEL_RGB, frame.shape[1], frame.shape[0], input_w, input_h)
         mat_in.substract_mean_normalize([0.0, 0.0, 0.0], [1/255.0, 1/255.0, 1/255.0])
 
         # 2. Inference
         with net.create_extractor() as ex:
             ex.input("in0", mat_in)      # SỬA LẠI: "images" -> "in0" (hoặc tên input đúng)
-            _, out = ex.extract("out0")  # SỬA LẠI: "output0" -> "out0" (hoặc tên output đúng)
-            outputs = np.array(out)
+            _, outputs = ex.extract("out0")  # SỬA LẠI: "output0" -> "out0" (hoặc tên output đúng)
+            # outputs = np.array(out)
 
         # 3. Post-processing
         detections = postprocess(frame, outputs, CONFIG["conf_threshold"], CONFIG["nms_threshold"])
@@ -162,8 +162,12 @@ def sender_worker(result_queue: Queue, server_address: str, camera_name: str = "
     first_frame_sent = False
     while True:
         frame = result_queue.get()  # block đến khi có dữ liệu
-        # frame ở đây là numpy array (BGR), imagezmq hỗ trợ trực tiếp
-        sender.send_image(camera_name, frame)
+
+        # Nén frame thành định dạng JPEG trước khi gửi
+        # Frame từ Picamera2 là RGB, nhưng OpenCV imencode mặc định xử lý BGR tốt hơn
+        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        ret, jpg_buffer = cv2.imencode(".jpg", frame_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), CONFIG["jpeg_quality"]])
+        sender.send_jpg(camera_name, jpg_buffer)
 
         if not first_frame_sent:
             print("[INFO] Client da ket noi va gui frame dau tien toi server thanh cong!")

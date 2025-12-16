@@ -11,3 +11,4 @@ videos/
 detections/
 best_conf03_iou045.pt
 server_test/
+*.pt
