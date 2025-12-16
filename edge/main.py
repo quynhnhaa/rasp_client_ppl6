@@ -124,8 +124,8 @@ def inference_worker(net: ncnn.Net, frame_queue: Queue, result_queue: Queue):
         # 2. Inference
         with net.create_extractor() as ex:
             ex.input("in0", mat_in)      # SỬA LẠI: "images" -> "in0" (hoặc tên input đúng)
-            _, outputs = ex.extract("out0")  # SỬA LẠI: "output0" -> "out0" (hoặc tên output đúng)
-            # outputs = np.array(out)
+            _, out = ex.extract("out0")  # SỬA LẠI: "output0" -> "out0" (hoặc tên output đúng)
+            outputs = np.array(out)
 
         # 3. Post-processing
         detections = postprocess(frame, outputs, CONFIG["conf_threshold"], CONFIG["nms_threshold"])
