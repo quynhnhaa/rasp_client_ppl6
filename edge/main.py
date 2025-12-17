@@ -90,14 +90,14 @@ def postprocess(frame, outputs, conf_threshold, nms_threshold):
     y_factor = h / CONFIG["input_size"][1]
     boxes, scores, class_ids = [], [], []
 
-    # YOLOv8 NCNN output format: [x, y, w, h, class_prob_0, class_prob_1, ...]
+    # YOLOv11 NCNN output format: [cx, cy, w, h, confidence, class_id]
     for detection in outputs.T:
-        # Lấy class có xác suất cao nhất
-        class_scores = detection[4:]
-        class_id = np.argmax(class_scores)
-        max_score = class_scores[class_id]
+        confidence = detection[4]
 
-        if max_score > conf_threshold:
+        if confidence > conf_threshold:
+            class_id = int(detection[5])
+            max_score = confidence
+
             # Chuyển đổi tọa độ từ [center_x, center_y, width, height] về [x1, y1, x2, y2]
             # Tọa độ từ model đã được chuẩn hóa theo input_size (320x320)
             cx, cy, box_w, box_h = detection[:4]
