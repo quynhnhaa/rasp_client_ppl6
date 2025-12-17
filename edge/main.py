@@ -88,7 +88,7 @@ def postprocess(frame, outputs, conf_threshold, nms_threshold):
 
     # outputs shape: (num_features, num_boxes)
     for detection in outputs.T:
-        print(detection[:10])
+        # print(detection[:10])
         cx, cy, bw, bh = detection[:4]
 
         obj_conf = detection[4]
