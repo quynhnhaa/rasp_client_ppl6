@@ -71,8 +71,9 @@ CONFIG = {
     "conf_threshold": 0.25,
     "nms_threshold": 0.45,
     "class_names": load_class_names("class_to_id.txt"),
-    "input_layer": "in0",   # Sẽ được cập nhật sau
-    "output_layer": "out0", # Sẽ được cập nhật sau
+    "input_layer": "in0",
+    "output_layer": "out0",
+    "num_threads": 4,  # Số threads cho inference
 }
 CONFIG["server_address"] = f"tcp://{CONFIG['server_ip']}:{CONFIG['server_port']}"
 
@@ -98,13 +99,15 @@ def load_ncnn_model(model_name):
     CONFIG["output_layer"] = output_name
 
     net = ncnn.Net()
-    # Tối ưu cho Raspberry Pi
+    
+    # ĐẶT SỐ THREADS Ở ĐÂY - trên net.opt
     net.opt.use_vulkan_compute = False  # Tắt Vulkan nếu không có GPU
-    net.opt.num_threads = 4  # Số threads phù hợp với Pi
+    net.opt.num_threads = CONFIG["num_threads"]  # Số threads cho inference
     
     net.load_param(param_path)
     net.load_model(bin_path)
     print(f"[INFO] Da load NCNN model tu: {export_dir}")
+    print(f"[INFO] Num threads: {CONFIG['num_threads']}")
     return net
 
 
@@ -126,12 +129,6 @@ def camera_worker(picam2, frame_queue: Queue):
 def postprocess_yolo11(frame, outputs, conf_threshold, nms_threshold, num_classes):
     """
     Post-process YOLO11 NCNN output.
-    
-    YOLO11/YOLOv8 output format từ Ultralytics NCNN export:
-    - Shape: [4 + num_classes, num_boxes] 
-    - Ví dụ: [84, 8400] cho 80 classes với input 640x640
-    - Row 0-3: x_center, y_center, width, height (pixel values)
-    - Row 4+: class probabilities
     """
     h, w = frame.shape[:2]
     input_w, input_h = CONFIG["input_size"]
@@ -144,31 +141,21 @@ def postprocess_yolo11(frame, outputs, conf_threshold, nms_threshold, num_classe
     scores = []
     class_ids = []
 
-    # Debug shape
-    print(f"[DEBUG] Output shape: {outputs.shape}")
-
     # Handle different output shapes
-    # NCNN output có thể là [C, N] hoặc [1, C, N] hoặc [N, C]
     if len(outputs.shape) == 3:
         outputs = outputs.squeeze(0)
     
-    # Kiểm tra shape và transpose nếu cần
     # YOLO11 output: [4 + num_classes, num_boxes]
-    # Ta cần transpose thành [num_boxes, 4 + num_classes]
+    # Transpose thành [num_boxes, 4 + num_classes]
     if outputs.shape[0] == (4 + num_classes):
         outputs = outputs.T
     elif outputs.shape[1] == (4 + num_classes):
-        pass  # Đã đúng format
+        pass
     else:
-        print(f"[WARNING] Unexpected output shape: {outputs.shape}")
-        # Thử transpose nếu dimension đầu nhỏ hơn
         if outputs.shape[0] < outputs.shape[1]:
             outputs = outputs.T
 
-    print(f"[DEBUG] Output shape after transpose: {outputs.shape}")
-
     for detection in outputs:
-        # detection: [x_center, y_center, width, height, class_0, class_1, ...]
         class_scores = detection[4:4 + num_classes]
         class_id = int(np.argmax(class_scores))
         max_score = float(class_scores[class_id])
@@ -176,14 +163,11 @@ def postprocess_yolo11(frame, outputs, conf_threshold, nms_threshold, num_classe
         if max_score > conf_threshold:
             cx, cy, box_w, box_h = detection[:4]
 
-            # Convert center format to corner format
-            # Scale to original image size
             x1 = int((cx - box_w / 2) * x_factor)
             y1 = int((cy - box_h / 2) * y_factor)
             box_width = int(box_w * x_factor)
             box_height = int(box_h * y_factor)
 
-            # Clamp to image bounds
             x1 = max(0, x1)
             y1 = max(0, y1)
             box_width = min(box_width, w - x1)
@@ -193,7 +177,6 @@ def postprocess_yolo11(frame, outputs, conf_threshold, nms_threshold, num_classe
             scores.append(max_score)
             class_ids.append(class_id)
 
-    # Apply Non-Maximum Suppression
     final_boxes = []
     if len(boxes) > 0:
         indices = cv2.dnn.NMSBoxes(boxes, scores, conf_threshold, nms_threshold)
@@ -226,23 +209,19 @@ def inference_worker(net: ncnn.Net, frame_queue: Queue, result_queue: Queue):
         frame = frame_queue.get()
 
         # 1. Pre-processing
-        # YOLO expects RGB normalized to [0, 1]
         mat_in = ncnn.Mat.from_pixels_resize(
             frame, 
-            ncnn.Mat.PixelType.PIXEL_RGB,  # Camera đã xuất RGB888
+            ncnn.Mat.PixelType.PIXEL_RGB,
             frame.shape[1], 
             frame.shape[0], 
             input_w, 
             input_h
         )
         
-        # Normalize: (pixel - mean) * norm = pixel * (1/255)
-        # mean = [0, 0, 0], norm = [1/255, 1/255, 1/255]
         mat_in.substract_mean_normalize([0.0, 0.0, 0.0], [1/255.0, 1/255.0, 1/255.0])
 
-        # 2. Inference
+        # 2. Inference - KHÔNG cần set_num_threads ở đây
         ex = net.create_extractor()
-        ex.set_num_threads(4)
         
         ret = ex.input(CONFIG["input_layer"], mat_in)
         if ret != 0:
@@ -278,7 +257,6 @@ def inference_worker(net: ncnn.Net, frame_queue: Queue, result_queue: Queue):
             score = det["score"]
             class_id = det["class_id"]
             
-            # Đảm bảo class_id hợp lệ
             if 0 <= class_id < len(CONFIG['class_names']):
                 label = f"{CONFIG['class_names'][class_id]}: {score:.2f}"
             else:
@@ -364,7 +342,6 @@ if __name__ == "__main__":
     
     print("[INFO] All threads started. Press Ctrl+C to stop.")
 
-    # 5. Giữ main thread sống
     try:
         while True:
             time.sleep(1)
