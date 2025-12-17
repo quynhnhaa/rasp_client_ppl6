@@ -90,8 +90,8 @@ def postprocess(frame, outputs, conf_threshold, nms_threshold):
     y_factor = h / CONFIG["input_size"][1]
     boxes, scores, class_ids = [], [], []
 
-    # YOLOv11 NCNN output format: [cx, cy, w, h, confidence, class_id]
-    for detection in outputs.T:
+    # Lặp qua mỗi hàng trong output. Mỗi hàng là một detection.
+    for detection in outputs:
         confidence = detection[4]
 
         if confidence > conf_threshold:
