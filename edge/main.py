@@ -36,7 +36,7 @@ CONFIG = {
     "camera_resolution": (640, 640),
     "queue_size": 2, # GIẢM KÍCH THƯỚC QUEUE để tiết kiệm RAM
     # --- Cấu hình cho model NCNN ---
-    "input_size": (320, 320), # Kích thước input của model (đã cập nhật theo model mới)
+    "input_size": (640, 640), # Kích thước input của model (đã cập nhật theo model mới)
     "conf_threshold": 0.25,   # Ngưỡng tin cậy để giữ lại một box
     "nms_threshold": 0.45,    # Ngưỡng IoU cho Non-Maximum Suppression
     "class_names": load_class_names("class_to_id.txt"), # Tự động tải từ file
