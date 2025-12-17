@@ -93,7 +93,7 @@ def inference_worker(model: YOLO, frame_queue: Queue, result_queue: Queue):
             frame_count = 0
         
         cv2.putText(annotated_frame, f"FPS: {fps:.2f}", (10, 30),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 2)
 
         try:
             # Đưa frame đã vẽ vào queue
