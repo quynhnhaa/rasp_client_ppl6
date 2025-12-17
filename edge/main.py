@@ -90,9 +90,11 @@ def postprocess(frame, outputs, conf_threshold, nms_threshold):
     y_factor = h / CONFIG["input_size"][1]
     boxes, scores, class_ids = [], [], []
 
-    # Đầu ra của YOLOv8/v11 NCNN có shape (8400, num_classes + 4)
+    # Đầu ra thô từ NCNN có shape (num_classes + 4, 8400).
+    # Chúng ta cần chuyển vị (transpose) nó thành (8400, num_classes + 4)
+    # để mỗi hàng là một bounding box.
     # Mỗi hàng có định dạng: [cx, cy, w, h, prob_class_0, prob_class_1, ...]
-    for row in outputs:
+    for row in outputs.T: # Thêm .T để chuyển vị
         # Tách phần tọa độ và phần xác suất các lớp
         box_coords = row[:4]
         class_probs = row[4:]
