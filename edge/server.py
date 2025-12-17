@@ -1,7 +1,6 @@
 import cv2
 import imagezmq
 import traceback
-import numpy as np
 
 def main():
     """
@@ -19,10 +18,7 @@ def main():
         while True:
             # Nhận tên camera và khung hình từ client
             # Lệnh này sẽ block cho đến khi có ảnh mới
-            # 1. Nhận chuỗi byte JPEG từ client
-            cam_name, jpg_buffer = image_hub.recv_jpg()
-            # 2. Giải nén chuỗi byte thành ảnh OpenCV
-            frame = cv2.imdecode(np.frombuffer(jpg_buffer, dtype='uint8'), cv2.IMREAD_COLOR)
+            cam_name, frame = image_hub.recv_image()
 
             # In thông báo nếu đây là client mới
             if cam_name not in connected_clients:

@@ -18,10 +18,10 @@ CONFIG = {
     "server_ip": os.getenv("server_ip", "127.0.0.1"),
     "server_port": 5555,
     "camera_name": "raspi_cam",
-    "camera_resolution": (640, 640),
+    "camera_resolution": (320, 320),
     "queue_size": 2, # GIẢM KÍCH THƯỚC QUEUE để tiết kiệm RAM
     # --- Cấu hình cho model NCNN ---
-    "input_size": (640, 640), # Kích thước input của model
+    "input_size": (320, 320), # Kích thước input của model
     "conf_threshold": 0.25,   # Ngưỡng tin cậy để giữ lại một box
     "nms_threshold": 0.45,    # Ngưỡng IoU cho Non-Maximum Suppression
     "class_names": ["product"], # Thay bằng danh sách tên class của bạn
