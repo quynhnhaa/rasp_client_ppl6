@@ -218,7 +218,7 @@ def inference_worker(net: ncnn.Net, frame_queue: Queue, result_queue: Queue):
             input_h
         )
         
-        # mat_in.substract_mean_normalize([0.0, 0.0, 0.0], [1/255.0, 1/255.0, 1/255.0])
+        mat_in.substract_mean_normalize([0.0, 0.0, 0.0], [1/255.0, 1/255.0, 1/255.0])
 
         # 2. Inference - KHÔNG cần set_num_threads ở đây
         ex = net.create_extractor()
