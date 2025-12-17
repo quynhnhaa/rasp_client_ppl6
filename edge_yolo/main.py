@@ -78,8 +78,11 @@ def inference_worker(model: YOLO, frame_queue: Queue, result_queue: Queue):
         )
 
         # 2. Lấy frame đã được vẽ bounding box
-        annotated_frame = results[0].plot()
-
+        # Có thể tùy chỉnh kích thước chữ của label bằng tham số font_size
+        annotated_frame = results[0].plot(
+            font_size=0.4,  # Giảm kích thước font của label
+            line_width=1    # Đồng thời giảm độ dày của bounding box cho phù hợp
+        )
 
         # 3. Tính toán và vẽ FPS
         frame_count += 1
@@ -90,7 +93,7 @@ def inference_worker(model: YOLO, frame_queue: Queue, result_queue: Queue):
             frame_count = 0
         
         cv2.putText(annotated_frame, f"FPS: {fps:.2f}", (10, 30),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
         try:
             # Đưa frame đã vẽ vào queue
