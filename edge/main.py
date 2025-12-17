@@ -90,26 +90,29 @@ def postprocess(frame, outputs, conf_threshold, nms_threshold):
     y_factor = h / CONFIG["input_size"][1]
     boxes, scores, class_ids = [], [], []
 
-    # Lặp qua mỗi hàng trong output. Mỗi hàng là một detection.
-    for detection in outputs:
-        confidence = detection[4]
+    # Đầu ra của YOLOv8/v11 NCNN có shape (8400, num_classes + 4)
+    # Mỗi hàng có định dạng: [cx, cy, w, h, prob_class_0, prob_class_1, ...]
+    for row in outputs:
+        # Tách phần tọa độ và phần xác suất các lớp
+        box_coords = row[:4]
+        class_probs = row[4:]
+        
+        # Tìm lớp có xác suất cao nhất
+        class_id = np.argmax(class_probs)
+        confidence = class_probs[class_id]
 
         if confidence > conf_threshold:
-            class_id = int(detection[5])
-            max_score = confidence
-
-            # Chuyển đổi tọa độ từ [center_x, center_y, width, height] về [x1, y1, x2, y2]
-            # Tọa độ từ model đã được chuẩn hóa theo input_size (320x320)
-            cx, cy, box_w, box_h = detection[:4]
+            # Tọa độ từ model đã được chuẩn hóa theo input_size
+            cx, cy, box_w, box_h = box_coords
 
             # Scale tọa độ về kích thước ảnh gốc
             box_x = int((cx - box_w / 2) * x_factor)
             box_y = int((cy - box_h / 2) * y_factor)
             box_width = int(box_w * x_factor)
             box_height = int(box_h * y_factor)
-
+            
             boxes.append([box_x, box_y, box_width, box_height]) # cv2.dnn.NMSBoxes expects [x, y, w, h]
-            scores.append(float(max_score))
+            scores.append(float(confidence))
             class_ids.append(class_id)
 
     # Áp dụng Non-Maximum Suppression
