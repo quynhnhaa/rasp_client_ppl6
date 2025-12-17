@@ -84,6 +84,7 @@ def camera_worker(picam2, frame_queue: Queue):
 # ---------------------
 def postprocess(frame, outputs, conf_threshold, nms_threshold):
     h, w, _ = frame.shape
+    boxes, scores, class_ids = [], [], []
 
     # YOLOv8 NCNN output format: [x, y, w, h, class_prob_0, class_prob_1, ...]
     for detection in outputs.T:
