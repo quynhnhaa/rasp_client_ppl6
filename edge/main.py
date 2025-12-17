@@ -10,9 +10,7 @@ import cv2
 import ncnn
 import numpy as np
 
-# ---------------------
-# Hàm helper để tải class names
-# ---------------------
+
 def load_class_names(filename="class_to_id.txt"):
     """Tải danh sách tên class từ file text, mỗi class một dòng."""
     try:
@@ -23,39 +21,6 @@ def load_class_names(filename="class_to_id.txt"):
     except FileNotFoundError:
         print(f"[ERROR] Không tìm thấy file class '{filename}'. Sử dụng class mặc định ['product'].")
         return ["product"]
-
-
-def get_ncnn_layer_names(param_path):
-    """Đọc file .param để lấy tên input và output layer."""
-    input_name = None
-    output_name = None
-    
-    with open(param_path, 'r') as f:
-        lines = f.readlines()
-    
-    for line in lines:
-        parts = line.strip().split()
-        if len(parts) >= 2:
-            layer_type = parts[0]
-            layer_name = parts[1]
-            
-            # Input layer
-            if layer_type == "Input":
-                input_name = layer_name
-            
-            # Tìm output layer (thường là layer cuối hoặc có tên chứa 'output')
-            if "output" in layer_name.lower() or layer_type in ["Concat", "Permute", "Reshape"]:
-                output_name = layer_name
-    
-    # Fallback values cho Ultralytics export
-    if input_name is None:
-        input_name = "in0"
-    if output_name is None:
-        output_name = "out0"
-    
-    print(f"[INFO] Input layer: {input_name}, Output layer: {output_name}")
-    return input_name, output_name
-
 
 # ---------------------
 # CONFIG
@@ -68,7 +33,7 @@ CONFIG = {
     "camera_resolution": (640, 640),
     "queue_size": 1,
     "input_size": (640, 640),  # Phải khớp với imgsz khi export
-    "conf_threshold": 0.25,
+    "conf_threshold": 0.45,
     "nms_threshold": 0.45,
     "class_names": load_class_names("class_to_id.txt"),
     "input_layer": "in0",
