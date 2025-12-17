@@ -94,9 +94,9 @@ def load_ncnn_model(model_name):
         raise FileNotFoundError(f"Khong tim thay file .param hoac .bin trong: {export_dir}")
 
     # Lấy tên layer từ file param
-    input_name, output_name = get_ncnn_layer_names(param_path)
-    CONFIG["input_layer"] = input_name
-    CONFIG["output_layer"] = output_name
+    # input_name, output_name = get_ncnn_layer_names(param_path)
+    CONFIG["input_layer"] = "in0"
+    CONFIG["output_layer"] = "out0"
 
     net = ncnn.Net()
     
