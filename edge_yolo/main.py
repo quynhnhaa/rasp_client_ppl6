@@ -4,10 +4,16 @@ import queue
 from threading import Thread
 from queue import Queue
 
+# Đặt biến môi trường cho Ultralytics để tránh cảnh báo về quyền ghi.
+# Thư mục này sẽ được tạo trong cùng thư mục với script.
+project_dir = os.path.dirname(os.path.abspath(__file__))
+os.environ['YOLO_CONFIG_DIR'] = os.path.join(project_dir, '.config')
+
 from ultralytics import YOLO
 from picamera2 import Picamera2
 import imagezmq
 import cv2
+
 
 
 def load_class_names(filename="class_to_id.txt"):
