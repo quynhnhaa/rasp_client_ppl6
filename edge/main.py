@@ -11,6 +11,21 @@ import ncnn
 import numpy as np
 
 # ---------------------
+# Hàm helper để tải class names
+# ---------------------
+def load_class_names(filename="class_to_id.txt"):
+    """Tải danh sách tên class từ file text, mỗi class một dòng."""
+    try:
+        with open(filename, "r", encoding="utf-8") as f:
+            class_names = [line.strip() for line in f if line.strip()]
+        print(f"[INFO] Đã tải {len(class_names)} class từ '{filename}'.")
+        return class_names
+    except FileNotFoundError:
+        print(f"[ERROR] Không tìm thấy file class '{filename}'. Sử dụng class mặc định ['product'].")
+        return ["product"]
+
+
+# ---------------------
 # CONFIG
 # ---------------------
 CONFIG = {
@@ -24,7 +39,7 @@ CONFIG = {
     "input_size": (320, 320), # Kích thước input của model (đã cập nhật theo model mới)
     "conf_threshold": 0.25,   # Ngưỡng tin cậy để giữ lại một box
     "nms_threshold": 0.45,    # Ngưỡng IoU cho Non-Maximum Suppression
-    "class_names": ["product"], # Thay bằng danh sách tên class của bạn
+    "class_names": load_class_names("class_to_id.txt"), # Tự động tải từ file
 }
 CONFIG["server_address"] = f"tcp://{CONFIG['server_ip']}:{CONFIG['server_port']}"
 
@@ -69,7 +84,6 @@ def camera_worker(picam2, frame_queue: Queue):
 # ---------------------
 def postprocess(frame, outputs, conf_threshold, nms_threshold):
     h, w, _ = frame.shape
-    boxes, scores, class_ids = [], [], []
 
     # YOLOv8 NCNN output format: [x, y, w, h, class_prob_0, class_prob_1, ...]
     for detection in outputs.T:
