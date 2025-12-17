@@ -18,10 +18,10 @@ CONFIG = {
     "server_ip": os.getenv("server_ip", "127.0.0.1"),
     "server_port": 5555,
     "camera_name": "raspi_cam",
-    "camera_resolution": (320, 320),
+    "camera_resolution": (640, 640),
     "queue_size": 2, # GIẢM KÍCH THƯỚC QUEUE để tiết kiệm RAM
     # --- Cấu hình cho model NCNN ---
-    "input_size": (320, 320), # Kích thước input của model
+    "input_size": (320, 320), # Kích thước input của model (đã cập nhật theo model mới)
     "conf_threshold": 0.25,   # Ngưỡng tin cậy để giữ lại một box
     "nms_threshold": 0.45,    # Ngưỡng IoU cho Non-Maximum Suppression
     "class_names": ["product"], # Thay bằng danh sách tên class của bạn
@@ -117,7 +117,6 @@ def inference_worker(net: ncnn.Net, frame_queue: Queue, result_queue: Queue):
 
         # 1. Pre-processing
         # Frame từ Picamera2 đã là RGB, không cần cvtColor
-        img_resized = cv2.resize(frame, (input_w, input_h))
         mat_in = ncnn.Mat.from_pixels_resize(frame, ncnn.Mat.PixelType.PIXEL_RGB, frame.shape[1], frame.shape[0], input_w, input_h)
         mat_in.substract_mean_normalize([0.0, 0.0, 0.0], [1/255.0, 1/255.0, 1/255.0])
 
