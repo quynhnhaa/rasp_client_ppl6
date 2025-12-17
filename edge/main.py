@@ -84,6 +84,10 @@ def camera_worker(picam2, frame_queue: Queue):
 # ---------------------
 def postprocess(frame, outputs, conf_threshold, nms_threshold):
     h, w, _ = frame.shape
+    # Tính tỉ lệ giữa kích thước ảnh gốc và kích thước input của model
+    # để scale bounding box cho đúng.
+    x_factor = w / CONFIG["input_size"][0]
+    y_factor = h / CONFIG["input_size"][1]
     boxes, scores, class_ids = [], [], []
 
     # YOLOv8 NCNN output format: [x, y, w, h, class_prob_0, class_prob_1, ...]
@@ -95,13 +99,16 @@ def postprocess(frame, outputs, conf_threshold, nms_threshold):
 
         if max_score > conf_threshold:
             # Chuyển đổi tọa độ từ [center_x, center_y, width, height] về [x1, y1, x2, y2]
-            cx, cy, width, height = detection[:4]
-            x1 = int((cx - width / 2) * w)
-            y1 = int((cy - height / 2) * h)
-            x2 = int((cx + width / 2) * w)
-            y2 = int((cy + height / 2) * h)
+            # Tọa độ từ model đã được chuẩn hóa theo input_size (320x320)
+            cx, cy, box_w, box_h = detection[:4]
 
-            boxes.append([x1, y1, x2 - x1, y2 - y1]) # cv2.dnn.NMSBoxes expects [x, y, w, h]
+            # Scale tọa độ về kích thước ảnh gốc
+            box_x = int((cx - box_w / 2) * x_factor)
+            box_y = int((cy - box_h / 2) * y_factor)
+            box_width = int(box_w * x_factor)
+            box_height = int(box_h * y_factor)
+
+            boxes.append([box_x, box_y, box_width, box_height]) # cv2.dnn.NMSBoxes expects [x, y, w, h]
             scores.append(float(max_score))
             class_ids.append(class_id)
 
