@@ -36,7 +36,7 @@ CONFIG = {
     "server_ip": os.getenv("server_ip", "127.0.0.1"),
     "server_port": 5555,
     "camera_name": "raspi_cam",
-    "camera_resolution": (320, 320), # <-- THAY ĐỔI Ở ĐÂY: Khớp với imagesize=320 khi export NCNN
+    "camera_resolution": (640, 640),
     "queue_size": 1,
     "conf_threshold": 0.45,
     "nms_threshold": 0.45,
@@ -80,8 +80,6 @@ def inference_worker(model: YOLO, frame_queue: Queue, result_queue: Queue):
         # 2. Lấy frame đã được vẽ bounding box
         annotated_frame = results[0].plot()
 
-        # Lấy số lượng vật thể phát hiện được
-        num_detections = len(results[0].boxes)
 
         # 3. Tính toán và vẽ FPS
         frame_count += 1
@@ -93,8 +91,6 @@ def inference_worker(model: YOLO, frame_queue: Queue, result_queue: Queue):
         
         cv2.putText(annotated_frame, f"FPS: {fps:.2f}", (10, 30),
                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-        cv2.putText(annotated_frame, f"Detections: {num_detections}", (10, 60),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
 
         try:
             # Đưa frame đã vẽ vào queue
