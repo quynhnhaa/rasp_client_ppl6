@@ -11,18 +11,49 @@ import ncnn
 import numpy as np
 
 # ---------------------
-# Hàm helper để tải class names
+# Hàm helper
 # ---------------------
 def load_class_names(filename="class_to_id.txt"):
-    """Tải danh sách tên class từ file text, mỗi class một dòng."""
     try:
         with open(filename, "r", encoding="utf-8") as f:
             class_names = [line.strip() for line in f if line.strip()]
-        print(f"[INFO] Đã tải {len(class_names)} class từ '{filename}'.")
+        print(f"[INFO] Loaded {len(class_names)} classes from '{filename}'.")
         return class_names
     except FileNotFoundError:
-        print(f"[ERROR] Không tìm thấy file class '{filename}'. Sử dụng class mặc định ['product'].")
+        print(f"[ERROR] Class file '{filename}' not found.")
         return ["product"]
+
+
+def letterbox(img, new_shape=(640, 640), color=(114, 114, 114)):
+    """
+    Resize và pad ảnh giống như YOLO training.
+    """
+    shape = img.shape[:2]  # [height, width]
+    
+    if isinstance(new_shape, int):
+        new_shape = (new_shape, new_shape)
+    
+    # Scale ratio (new / old)
+    r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
+    
+    # Compute padding
+    new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
+    dw, dh = new_shape[1] - new_unpad[0], new_shape[0] - new_unpad[1]
+    
+    # Divide padding into 2 sides
+    dw /= 2
+    dh /= 2
+    
+    # Resize
+    if shape[::-1] != new_unpad:
+        img = cv2.resize(img, new_unpad, interpolation=cv2.INTER_LINEAR)
+    
+    # Add border
+    top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
+    left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
+    img = cv2.copyMakeBorder(img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)
+    
+    return img, r, (dw, dh)
 
 
 # ---------------------
@@ -34,24 +65,24 @@ CONFIG = {
     "server_port": 5555,
     "camera_name": "raspi_cam",
     "camera_resolution": (640, 640),
-    "queue_size": 1, # GIẢM KÍCH THƯỚC QUEUE để tiết kiệm RAM
-    # --- Cấu hình cho model NCNN ---
-    "input_size": (640, 640), # Kích thước input của model, giữ 640x640 để có độ chính xác cao
-    "conf_threshold": 0.25,   # Ngưỡng tin cậy để giữ lại một box
-    "nms_threshold": 0.45,    # Ngưỡng IoU cho Non-Maximum Suppression
-    "class_names": load_class_names("class_to_id.txt"), # Tự động tải từ file
+    "queue_size": 1,
+    "input_size": (640, 640),
+    "conf_threshold": 0.25,
+    "nms_threshold": 0.45,
+    "class_names": load_class_names("class_to_id.txt"),
+    "num_threads": 4,
+    # Tên layer đúng từ file .param
+    "input_layer": "in0",
+    "output_layer": "out0",  # ĐÂY LÀ TÊN OUTPUT BLOB, KHÔNG PHẢI cat_22
 }
 CONFIG["server_address"] = f"tcp://{CONFIG['server_ip']}:{CONFIG['server_port']}"
 
 
 # ---------------------
-# Hàm load NCNN model
+# Load NCNN model
 # ---------------------
 def load_ncnn_model(model_name):
-    model_name = CONFIG["model_name"]
-    
     if not os.path.isfile(model_name):
-        print(f"[ERROR] Khong tim thay file mo hinh: {model_name}")
         raise FileNotFoundError(model_name)
         
     export_dir = os.path.splitext(model_name)[0] + "_ncnn_model"
@@ -59,181 +90,287 @@ def load_ncnn_model(model_name):
     bin_path = os.path.join(export_dir, "model.ncnn.bin")
 
     if not (os.path.exists(param_path) and os.path.exists(bin_path)):
-        raise FileNotFoundError(f"Khong tim thay file .param hoac .bin trong: {export_dir}")
+        raise FileNotFoundError(f"Missing .param or .bin in: {export_dir}")
 
     net = ncnn.Net()
+    net.opt.use_vulkan_compute = False
+    net.opt.num_threads = CONFIG["num_threads"]
+    
     net.load_param(param_path)
     net.load_model(bin_path)
-    print(f"[INFO] Da load NCNN model tu: {export_dir}")
+    
+    print(f"[INFO] Loaded NCNN model from: {export_dir}")
+    print(f"[INFO] Input layer: {CONFIG['input_layer']}")
+    print(f"[INFO] Output layer: {CONFIG['output_layer']}")
     return net
 
+
 # ---------------------
-# Thread 1: Camera
+# Camera worker
 # ---------------------
 def camera_worker(picam2, frame_queue: Queue):
     while True:
-        frame = picam2.capture_array()   # frame là numpy array 
+        frame = picam2.capture_array()
         try:
             frame_queue.put(frame, timeout=0.1)
         except queue.Full:
-            # Nếu queue đầy thì bỏ frame này (tránh lag do dồn frame cũ)
             pass
 
+
 # ---------------------
-# Thread 2: Inference
+# Postprocess YOLO11 NCNN - ĐÃ DECODE
 # ---------------------
-def postprocess(frame, outputs, conf_threshold, nms_threshold):
-    h, w, _ = frame.shape
-    boxes, scores, class_ids = [], [], []
+def postprocess_yolo11_decoded(frame, outputs, conf_threshold, nms_threshold, 
+                                num_classes, ratio, pad):
+    """
+    Post-process YOLO11 NCNN output.
+    
+    QUAN TRỌNG: Output từ NCNN đã được decode hoàn toàn:
+    - Boxes đã được scale về pixel coordinates (trên ảnh 640x640)
+    - Class probabilities đã qua sigmoid
+    
+    Output shape: [8400, 4 + num_classes] hoặc [4 + num_classes, 8400]
+    Format: [cx, cy, w, h, class_0, class_1, ..., class_n] (đã scale)
+    """
+    h, w = frame.shape[:2]
+    dw, dh = pad
 
-    # outputs shape: (num_features, num_boxes)
-    for detection in outputs.T:
-        # print(detection[:10])
-        cx, cy, bw, bh = detection[:4]
+    boxes = []
+    scores = []
+    class_ids = []
 
-        obj_conf = detection[4]
-        if obj_conf < conf_threshold:
-            continue
+    # Debug shape
+    print(f"[DEBUG] Raw output shape: {outputs.shape}") if len(boxes) == 0 else None
 
-        class_scores = detection[5:]
+    # Handle output shape
+    if len(outputs.shape) == 3:
+        outputs = outputs.squeeze(0)
+    
+    # Transpose nếu cần: [4+nc, N] -> [N, 4+nc]
+    # YOLO11 NCNN output thường là [8400, 153] hoặc [153, 8400]
+    if outputs.shape[0] == (4 + num_classes):
+        outputs = outputs.T
+    elif outputs.shape[1] == (4 + num_classes):
+        pass  # Đã đúng format
+    elif outputs.shape[0] < outputs.shape[1]:
+        outputs = outputs.T
+
+    for detection in outputs:
+        # Class scores đã qua sigmoid, range [0, 1]
+        class_scores = detection[4:4 + num_classes]
         class_id = int(np.argmax(class_scores))
-        class_conf = class_scores[class_id]
+        max_score = float(class_scores[class_id])
 
-        score = obj_conf * class_conf
-        if score < conf_threshold:
-            continue
+        if max_score > conf_threshold:
+            # Boxes đã được decode về pixel coordinates trên ảnh 640x640
+            # Format: [cx, cy, w, h] hoặc [x1, y1, x2, y2]
+            cx, cy, bw, bh = detection[:4]
+            
+            # Chuyển từ center format sang corner format
+            x1 = cx - bw / 2
+            y1 = cy - bh / 2
+            x2 = cx + bw / 2
+            y2 = cy + bh / 2
+            
+            # Scale ngược về tọa độ ảnh gốc
+            # 1. Trừ đi padding (vì letterbox thêm padding)
+            # 2. Chia cho ratio (vì letterbox scale ảnh)
+            x1 = (x1 - dw) / ratio
+            y1 = (y1 - dh) / ratio
+            x2 = (x2 - dw) / ratio
+            y2 = (y2 - dh) / ratio
+            
+            # Clamp to image bounds
+            x1 = max(0, min(w, x1))
+            y1 = max(0, min(h, y1))
+            x2 = max(0, min(w, x2))
+            y2 = max(0, min(h, y2))
+            
+            box_width = x2 - x1
+            box_height = y2 - y1
+            
+            if box_width > 0 and box_height > 0:
+                boxes.append([int(x1), int(y1), int(box_width), int(box_height)])
+                scores.append(max_score)
+                class_ids.append(class_id)
 
-        # YOLOv11 NCNN output thường là tọa độ theo input size (pixel)
-        x1 = int(cx - bw / 2)
-        y1 = int(cy - bh / 2)
-        x2 = int(cx + bw / 2)
-        y2 = int(cy + bh / 2)
+    # NMS
+    final_boxes = []
+    if len(boxes) > 0:
+        indices = cv2.dnn.NMSBoxes(boxes, scores, conf_threshold, nms_threshold)
+        
+        if len(indices) > 0:
+            for i in indices.flatten():
+                x, y, bw, bh = boxes[i]
+                final_boxes.append({
+                    "box": (x, y, x + bw, y + bh),
+                    "score": scores[i],
+                    "class_id": class_ids[i]
+                })
+    
+    return final_boxes
 
-        # Clamp để tránh out-of-bound
-        x1 = max(0, min(x1, w - 1))
-        y1 = max(0, min(y1, h - 1))
-        x2 = max(0, min(x2, w - 1))
-        y2 = max(0, min(y2, h - 1))
 
-        boxes.append([x1, y1, x2 - x1, y2 - y1])
-        scores.append(float(score))
-        class_ids.append(class_id)
-
-    indices = cv2.dnn.NMSBoxes(boxes, scores, conf_threshold, nms_threshold)
-
-    results = []
-    if len(indices) > 0:
-        for i in indices.flatten():
-            x, y, w_box, h_box = boxes[i]
-            results.append({
-                "box": (x, y, x + w_box, y + h_box),
-                "score": scores[i],
-                "class_id": class_ids[i]
-            })
-
-    return results
-
+# ---------------------
+# Inference worker
+# ---------------------
 def inference_worker(net: ncnn.Net, frame_queue: Queue, result_queue: Queue):
-    # FPS calculation variables
     start_time = time.time()
     frame_count = 0
     fps = 0
+    first_inference = True
 
     input_w, input_h = CONFIG["input_size"]
+    num_classes = len(CONFIG["class_names"])
 
     while True:
-        frame = frame_queue.get()  # block đến khi có frame
+        frame = frame_queue.get()
+        original_frame = frame.copy()
 
-        # 1. Pre-processing
-        mat_in = ncnn.Mat.from_pixels_resize(frame, ncnn.Mat.PixelType.PIXEL_RGB, frame.shape[1], frame.shape[0], input_w, input_h)
-        # mat_in.substract_mean_normalize([0.0, 0.0, 0.0], [1/255.0, 1/255.0, 1/255.0])
+        # 1. PREPROCESSING VỚI LETTERBOX
+        img_letterbox, ratio, pad = letterbox(frame, (input_h, input_w))
+        
+        # Convert to ncnn Mat (camera đã output RGB888)
+        mat_in = ncnn.Mat.from_pixels(
+            img_letterbox, 
+            ncnn.Mat.PixelType.PIXEL_RGB,
+            img_letterbox.shape[1], 
+            img_letterbox.shape[0]
+        )
+        
+        # Normalize: pixel / 255.0
+        mat_in.substract_mean_normalize([0.0, 0.0, 0.0], [1/255.0, 1/255.0, 1/255.0])
 
         # 2. Inference
-        with net.create_extractor() as ex:
-            ex.input("in0", mat_in)      # SỬA LẠI: "images" -> "in0" (hoặc tên input đúng)
-            _, out = ex.extract("out0")  # SỬA LẠI: "output0" -> "out0" (hoặc tên output đúng)
-            outputs = np.array(out)
+        ex = net.create_extractor()
+        
+        ret = ex.input(CONFIG["input_layer"], mat_in)
+        if ret != 0:
+            print(f"[ERROR] Failed to set input: {ret}")
+            continue
+        
+        # SỬ DỤNG out0 - TÊN OUTPUT BLOB ĐÚNG
+        ret, out = ex.extract(CONFIG["output_layer"])
+        if ret != 0:
+            print(f"[ERROR] Failed to extract output: {ret}")
+            continue
+            
+        outputs = np.array(out)
+
+        # Debug first inference
+        if first_inference:
+            print(f"[DEBUG] ========================================")
+            print(f"[DEBUG] Output shape: {outputs.shape}")
+            print(f"[DEBUG] Output dtype: {outputs.dtype}")
+            print(f"[DEBUG] Output min/max: {outputs.min():.4f}/{outputs.max():.4f}")
+            print(f"[DEBUG] Ratio: {ratio}, Pad: {pad}")
+            print(f"[DEBUG] Num classes: {num_classes}")
+            print(f"[DEBUG] Expected: [8400, {4 + num_classes}] = [8400, {4 + num_classes}]")
+            
+            # Kiểm tra một vài detection đầu tiên
+            if len(outputs.shape) == 2:
+                test_out = outputs.T if outputs.shape[0] < outputs.shape[1] else outputs
+                print(f"[DEBUG] Sample detection 0: boxes={test_out[0, :4]}, max_class_score={test_out[0, 4:].max():.4f}")
+            print(f"[DEBUG] ========================================")
+            first_inference = False
 
         # 3. Post-processing
-        detections = postprocess(frame, outputs, CONFIG["conf_threshold"], CONFIG["nms_threshold"])
-        # Tối ưu hóa: Vẽ trực tiếp lên frame gốc để tiết kiệm RAM, không cần copy()
+        detections = postprocess_yolo11_decoded(
+            original_frame,
+            outputs, 
+            CONFIG["conf_threshold"], 
+            CONFIG["nms_threshold"],
+            num_classes,
+            ratio,
+            pad
+        )
+        
+        # Vẽ detections
         for det in detections:
             x1, y1, x2, y2 = det["box"]
             score = det["score"]
             class_id = det["class_id"]
-            label = f"{CONFIG['class_names'][class_id]}: {score:.2f}"
-            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            
+            if 0 <= class_id < len(CONFIG['class_names']):
+                label = f"{CONFIG['class_names'][class_id]}: {score:.2f}"
+            else:
+                label = f"class_{class_id}: {score:.2f}"
+            
+            cv2.rectangle(original_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            cv2.putText(original_frame, label, (x1, y1 - 10), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
-        # Calculate and draw FPS
+        # FPS
         frame_count += 1
         elapsed_time = time.time() - start_time
         if elapsed_time > 1.0:
             fps = frame_count / elapsed_time
             start_time = time.time()
             frame_count = 0
-        cv2.putText(frame, f"FPS: {fps:.2f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+        
+        cv2.putText(original_frame, f"FPS: {fps:.2f}", (10, 30), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+        cv2.putText(original_frame, f"Det: {len(detections)}", (10, 60), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
 
         try:
-            result_queue.put(frame, timeout=0.1)
+            result_queue.put(original_frame, timeout=0.1)
         except queue.Full:
             pass
 
+
 # ---------------------
-# Thread 3: Gửi qua imagezmq
+# Sender worker
 # ---------------------
-def sender_worker(result_queue: Queue, server_address: str, camera_name: str = "raspi_cam"):
-    print(f"[INFO] Dang ket noi den server tai {server_address}...")
+def sender_worker(result_queue: Queue, server_address: str, camera_name: str):
+    print(f"[INFO] Connecting to server: {server_address}...")
     sender = imagezmq.ImageSender(connect_to=server_address)
     
     first_frame_sent = False
     while True:
-        frame = result_queue.get()  # block đến khi có dữ liệu
-        # frame ở đây là numpy array (BGR), imagezmq hỗ trợ trực tiếp
+        frame = result_queue.get()
         sender.send_image(camera_name, frame)
 
         if not first_frame_sent:
-            print("[INFO] Client da ket noi va gui frame dau tien toi server thanh cong!")
+            print("[INFO] First frame sent successfully!")
             first_frame_sent = True
+
 
 # ---------------------
 # Main
 # ---------------------
 if __name__ == "__main__":
-    # 1. Khởi tạo camera
+    print("="*50)
+    print("YOLO11 NCNN Inference")
+    print("="*50)
+    
+    # 1. Camera
     picam2 = Picamera2()
-    # Yêu cầu camera xuất ra định dạng RGB 3 kênh để tránh chuyển đổi sau này
     config = picam2.create_preview_configuration(
         main={"size": CONFIG["camera_resolution"], "format": "RGB888"}
     )
     picam2.configure(config)
     picam2.start()
+    print(f"[INFO] Camera started: {CONFIG['camera_resolution']}")
 
-    # 2. Load YOLO NCNN model
+    # 2. Load model
     model = load_ncnn_model(CONFIG["model_name"])
+    print(f"[INFO] Classes: {len(CONFIG['class_names'])}")
 
-    # 3. Tạo queue cho pipeline
-    frame_queue = Queue(maxsize=CONFIG["queue_size"])   # giới hạn để tránh tràn RAM
+    # 3. Queues
+    frame_queue = Queue(maxsize=CONFIG["queue_size"])
     result_queue = Queue(maxsize=CONFIG["queue_size"])
 
-    # 4. Khởi chạy 3 thread
-    cam_thread = Thread(target=camera_worker, args=(picam2, frame_queue), daemon=True)
-    inf_thread = Thread(target=inference_worker, args=(model, frame_queue, result_queue), daemon=True)
-    send_thread = Thread(
-        target=sender_worker,
-        args=(result_queue, CONFIG["server_address"], CONFIG["camera_name"]),
-        daemon=True
-    )
+    # 4. Threads
+    Thread(target=camera_worker, args=(picam2, frame_queue), daemon=True).start()
+    Thread(target=inference_worker, args=(model, frame_queue, result_queue), daemon=True).start()
+    Thread(target=sender_worker, args=(result_queue, CONFIG["server_address"], CONFIG["camera_name"]), daemon=True).start()
+    
+    print("[INFO] Running... Press Ctrl+C to stop.")
 
-    cam_thread.start()
-    inf_thread.start()
-    send_thread.start()
-
-    # 5. Giữ main thread sống, có thể thêm xử lý signal/thoát
     try:
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
-        print("Stopping...")
-        # Có thể thêm code dừng camera, đóng socket, etc.
+        print("\n[INFO] Stopping...")
         picam2.stop()
