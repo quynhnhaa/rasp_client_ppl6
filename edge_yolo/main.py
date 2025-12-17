@@ -36,7 +36,7 @@ CONFIG = {
     "server_ip": os.getenv("server_ip", "127.0.0.1"),
     "server_port": 5555,
     "camera_name": "raspi_cam",
-    "camera_resolution": (640, 640),
+    "camera_resolution": (320, 320), # <-- THAY ĐỔI Ở ĐÂY: Khớp với imagesize=320 khi export NCNN
     "queue_size": 1,
     "conf_threshold": 0.45,
     "nms_threshold": 0.45,
