@@ -34,9 +34,9 @@ CONFIG = {
     "server_port": 5555,
     "camera_name": "raspi_cam",
     "camera_resolution": (640, 640),
-    "queue_size": 2, # GIẢM KÍCH THƯỚC QUEUE để tiết kiệm RAM
+    "queue_size": 1, # GIẢM KÍCH THƯỚC QUEUE để tiết kiệm RAM
     # --- Cấu hình cho model NCNN ---
-    "input_size": (640, 640), # Kích thước input của model (đã cập nhật theo model mới)
+    "input_size": (640, 640), # Kích thước input của model, giữ 640x640 để có độ chính xác cao
     "conf_threshold": 0.25,   # Ngưỡng tin cậy để giữ lại một box
     "nms_threshold": 0.45,    # Ngưỡng IoU cho Non-Maximum Suppression
     "class_names": load_class_names("class_to_id.txt"), # Tự động tải từ file
@@ -72,7 +72,7 @@ def load_ncnn_model(model_name):
 # ---------------------
 def camera_worker(picam2, frame_queue: Queue):
     while True:
-        frame = picam2.capture_array()   # frame là numpy array (RGB/BGR tùy config)
+        frame = picam2.capture_array()   # frame là numpy array 
         try:
             frame_queue.put(frame, timeout=0.1)
         except queue.Full:
@@ -138,7 +138,6 @@ def inference_worker(net: ncnn.Net, frame_queue: Queue, result_queue: Queue):
         frame = frame_queue.get()  # block đến khi có frame
 
         # 1. Pre-processing
-        # Frame từ Picamera2 đã là RGB, không cần cvtColor
         mat_in = ncnn.Mat.from_pixels_resize(frame, ncnn.Mat.PixelType.PIXEL_RGB, frame.shape[1], frame.shape[0], input_w, input_h)
         mat_in.substract_mean_normalize([0.0, 0.0, 0.0], [1/255.0, 1/255.0, 1/255.0])
 
@@ -150,14 +149,14 @@ def inference_worker(net: ncnn.Net, frame_queue: Queue, result_queue: Queue):
 
         # 3. Post-processing
         detections = postprocess(frame, outputs, CONFIG["conf_threshold"], CONFIG["nms_threshold"])
-        annotated_frame = frame.copy()
+        # Tối ưu hóa: Vẽ trực tiếp lên frame gốc để tiết kiệm RAM, không cần copy()
         for det in detections:
             x1, y1, x2, y2 = det["box"]
             score = det["score"]
             class_id = det["class_id"]
             label = f"{CONFIG['class_names'][class_id]}: {score:.2f}"
-            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            cv2.putText(annotated_frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
         # Calculate and draw FPS
         frame_count += 1
@@ -166,10 +165,10 @@ def inference_worker(net: ncnn.Net, frame_queue: Queue, result_queue: Queue):
             fps = frame_count / elapsed_time
             start_time = time.time()
             frame_count = 0
-        cv2.putText(annotated_frame, f"FPS: {fps:.2f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+        cv2.putText(frame, f"FPS: {fps:.2f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
         try:
-            result_queue.put(annotated_frame, timeout=0.1)
+            result_queue.put(frame, timeout=0.1)
         except queue.Full:
             pass
 
