@@ -12,6 +12,7 @@ def main():
 
     print("[INFO] Server đang chạy. Đang chờ kết nối từ client...")
     connected_clients = set()
+    display_size = (640, 640)  # Kích thước cửa sổ hiển thị mong muốn
 
     try:
         # Vòng lặp vô tận để nhận và hiển thị các khung hình
@@ -25,8 +26,11 @@ def main():
                 print(f"[INFO] Nhan duoc ket noi moi tu client: {cam_name}")
                 connected_clients.add(cam_name)
 
+            # Thay đổi kích thước frame để hiển thị lớn hơn
+            display_frame = cv2.resize(frame, display_size, interpolation=cv2.INTER_NEAREST)
+
             # Hiển thị khung hình trong một cửa sổ có tên là tên của camera
-            cv2.imshow(cam_name, frame)
+            cv2.imshow(cam_name, display_frame)
 
             # Chờ 1ms và kiểm tra nếu người dùng nhấn phím 'q' để thoát
             if cv2.waitKey(1) & 0xFF == ord('q'):
