@@ -112,14 +112,16 @@ def preprocess(frame, input_width, input_height):
     """
     # Resize ảnh về kích thước input của model
     img = cv2.resize(frame, (input_width, input_height))
-    
 
-    
+    # Chuyển đổi từ RGB (từ Picamera2) sang BGR vì ncnn.Mat.from_pixels
+    # mặc định xử lý BGR tốt hơn khi không chỉ định rõ.
+    img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+
     # Tạo ncnn.Mat từ pixels
     # from_pixels nhận: data, pixel_type, width, height
-    mat_in = ncnn.Mat.from_pixels(
-        img, 
-        ncnn.Mat.PixelType.PIXEL_RGB,
+    mat_in = ncnn.Mat.from_pixels( # Mặc định là PIXEL_BGR
+        img_bgr,
+        ncnn.Mat.PixelType.PIXEL_BGR,
         input_width, 
         input_height
     )
