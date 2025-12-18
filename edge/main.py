@@ -92,8 +92,8 @@ def load_ncnn_model(model_dir: str, model_base_name: str, num_threads: int) -> n
     """
     base_name = os.path.splitext(model_base_name)[0]
 
-    param_path = os.path.join(model_dir, base_name + ".param")
-    bin_path = os.path.join(model_dir, base_name + ".bin")
+    param_path = os.path.join(model_dir, base_name + "ncnn.param")
+    bin_path = os.path.join(model_dir, base_name + "ncnn.bin")
 
     if not os.path.isfile(param_path):
         raise FileNotFoundError(f"Không tìm thấy file param: {param_path}")
