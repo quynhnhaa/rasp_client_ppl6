@@ -78,6 +78,7 @@ def inference_worker(model: YOLO, frame_queue: Queue, result_queue: Queue, class
     while True:
         frame = frame_queue.get()
 
+        # 1. Inference
         results = model.predict(
             source=frame,
             conf=CONFIG["conf_threshold"],
@@ -85,33 +86,18 @@ def inference_worker(model: YOLO, frame_queue: Queue, result_queue: Queue, class
             verbose=False
         )
 
-        r = results[0]
-
-        detected_labels = []
-
-        if r.boxes is not None:
-            boxes = r.boxes.xyxy.cpu().numpy()
-            classes = r.boxes.cls.cpu().numpy().astype(int)
-            scores = r.boxes.conf.cpu().numpy()
-
-            for box, cls_id, conf in zip(boxes, classes, scores):
-                if conf < CONFIG["conf_threshold"]:
-                    continue
-
-                label = CONFIG["class_names"][cls_id]
-                detected_labels.append(label)
-
-                x1, y1, x2, y2 = map(int, box)
-
-                # vẽ box (tối giản)
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (0,255,0), 1)
-
-                # vẽ text class
-                cv2.putText(frame,label,(x1, y1 - 4),cv2.FONT_HERSHEY_SIMPLEX,0.4,(0,255,0),1)
+        result = results[0]
 
         # -------------------------
         # ĐẾM SỐ LƯỢNG THEO CLASS
         # -------------------------
+        detected_labels = []
+
+        if result.boxes is not None and len(result.boxes) > 0:
+            cls_ids = result.boxes.cls.cpu().numpy().astype(int)
+            for cid in cls_ids:
+                detected_labels.append(result.names[cid])
+
         if detected_labels:
             label_counts = Counter(detected_labels)
             print("Detections:", end=" ")
@@ -119,9 +105,10 @@ def inference_worker(model: YOLO, frame_queue: Queue, result_queue: Queue, class
                 print(f'"label": {lbl}, "quantity": {cnt}', end=" | ")
             print()
 
-        # -------------------------
-        # FPS
-        # -------------------------
+        # 2. Vẽ bounding box
+        annotated_frame = result.plot(font_size=0.4, line_width=1)
+
+        # 3. FPS
         frame_count += 1
         elapsed_time = time.time() - start_time
         if elapsed_time > 1.0:
@@ -129,10 +116,10 @@ def inference_worker(model: YOLO, frame_queue: Queue, result_queue: Queue, class
             start_time = time.time()
             frame_count = 0
 
-        cv2.putText(frame,f"FPS: {fps:.2f}",(10, 30),cv2.FONT_HERSHEY_SIMPLEX,0.4,(0, 255, 0),1)
+        cv2.putText(annotated_frame,f"FPS: {fps:.2f}",(10, 30),cv2.FONT_HERSHEY_SIMPLEX,0.4,(0, 255, 0),1)
 
         try:
-            result_queue.put(frame, timeout=0.1)
+            result_queue.put(annotated_frame, timeout=0.1)
         except queue.Full:
             pass
 
