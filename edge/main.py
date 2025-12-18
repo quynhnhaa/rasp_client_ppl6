@@ -21,6 +21,7 @@ def load_class_names_from_yaml(metadata_path):
         # Sắp xếp theo key (id) để đảm bảo thứ tự đúng
         class_names = [name for _, name in sorted(metadata['names'].items())]
         print(f"[INFO] Đã tải {len(class_names)} class từ '{metadata_path}'.")
+        print(f"[INFO] Danh sách class: {class_names}")
         return class_names
     except Exception as e:
         print(f"[ERROR] Lỗi khi đọc file metadata: {e}. Sử dụng class mặc định.")
