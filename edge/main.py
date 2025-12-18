@@ -84,9 +84,9 @@ def preprocess_ncnn(frame, input_width, input_height):
     img = cv2.resize(frame, (input_width, input_height))
     # Chuyển từ BGR (OpenCV) sang RGB
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    # Chuẩn hóa giá trị pixel về [0, 1]
-    img = img.astype(np.float32) / 255.0
-    return img
+    # KHÔNG chuẩn hóa về [0, 1]. NCNN yêu cầu input là ảnh RGB với giá trị pixel [0-255].
+    # Thư viện sẽ tự xử lý chuẩn hóa nội bộ.
+    return img # Trả về ảnh uint8
 
 
 # ---------------------
