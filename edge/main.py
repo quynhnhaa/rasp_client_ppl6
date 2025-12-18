@@ -21,7 +21,6 @@ def load_class_names_from_yaml(metadata_path):
         # Sắp xếp theo key (id) để đảm bảo thứ tự đúng
         class_names = [name for _, name in sorted(metadata['names'].items())]
         print(f"[INFO] Đã tải {len(class_names)} class từ '{metadata_path}'.")
-        print(f"[INFO] Danh sách class: {class_names}")
         return class_names
     except Exception as e:
         print(f"[ERROR] Lỗi khi đọc file metadata: {e}. Sử dụng class mặc định.")
@@ -112,8 +111,7 @@ def preprocess(frame, input_width, input_height):
         ncnn.Mat đã được chuẩn hóa
     """
     # Resize ảnh về kích thước input của model
-    # Luôn tạo một bản sao để đảm bảo frame gốc không bao giờ bị thay đổi
-    img = cv2.resize(frame.copy(), (input_width, input_height))
+    img = cv2.resize(frame, (input_width, input_height))
 
     # Chuyển đổi từ RGB (từ Picamera2) sang BGR vì ncnn.Mat.from_pixels
     # mặc định xử lý BGR tốt hơn khi không chỉ định rõ.
@@ -156,10 +154,7 @@ def postprocess(frame, output, conf_threshold, nms_threshold, class_names, input
     Returns:
         Frame đã được vẽ bounding box
     """
-    # Tạo một bản sao của frame để vẽ lên, đảm bảo frame gốc không bị thay đổi.
-    annotated_frame = frame.copy()
-
-    frame_height, frame_width = annotated_frame.shape[:2]
+    frame_height, frame_width = frame.shape[:2]
     
     # Tỷ lệ scale giữa ảnh gốc và ảnh input
     x_factor = frame_width / input_width
@@ -203,12 +198,12 @@ def postprocess(frame, output, conf_threshold, nms_threshold, class_names, input
 
     # Áp dụng Non-Maximum Suppression để loại bỏ các box trùng lặp
     if len(boxes) == 0:
-        return annotated_frame
+        return frame
         
     indices = cv2.dnn.NMSBoxes(boxes, scores, conf_threshold, nms_threshold)
     
     if len(indices) == 0:
-        return annotated_frame
+        return frame
 
     # Vẽ các bounding box lên ảnh
     for i in indices.flatten():
@@ -223,14 +218,14 @@ def postprocess(frame, output, conf_threshold, nms_threshold, class_names, input
             label = f"ID_{class_id}: {score:.2f}"
 
         # Vẽ bounding box
-        cv2.rectangle(annotated_frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+        cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
         
         # Vẽ background cho text
         (text_width, text_height), _ = cv2.getTextSize(
             label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1
         )
         cv2.rectangle(
-            annotated_frame, 
+            frame, 
             (x, y - text_height - 10), 
             (x + text_width, y), 
             (0, 255, 0), 
@@ -239,11 +234,11 @@ def postprocess(frame, output, conf_threshold, nms_threshold, class_names, input
         
         # Vẽ text
         cv2.putText(
-            annotated_frame, label, (x, y - 5), 
+            frame, label, (x, y - 5), 
             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1
         )
 
-    return annotated_frame
+    return frame
 
 
 # ---------------------
@@ -287,18 +282,17 @@ def inference_worker(net, frame_queue: Queue, result_queue: Queue):
     frame_count = 0
     start_time = time.time()
     
-    # Tạo extractor một lần duy nhất để tái sử dụng
-    ex = net.create_extractor()
-    ex.set_light_mode(True)  # Tiết kiệm memory
-
     while True:
         # Lấy frame từ queue
         frame = frame_queue.get()
         
+        
         # 1. Tiền xử lý
         mat_in = preprocess(frame, input_width, input_height)
         
-        # 2. Nạp input vào extractor đã tạo
+        # 2. Tạo extractor và chạy inference
+        ex = net.create_extractor()
+        ex.set_light_mode(True)  # Tiết kiệm memory
         ex.input(input_layer, mat_in)
         
         # 3. Lấy output
@@ -314,7 +308,7 @@ def inference_worker(net, frame_queue: Queue, result_queue: Queue):
         
         # 5. Hậu xử lý - vẽ bounding box
         annotated_frame = postprocess(
-            frame,  # Truyền frame gốc, postprocess sẽ tự copy
+            frame.copy(),  # Copy để không ảnh hưởng frame gốc
             output,
             conf_threshold,
             nms_threshold,
@@ -323,18 +317,18 @@ def inference_worker(net, frame_queue: Queue, result_queue: Queue):
             input_height
         )
         
+        # Đưa frame đã xử lý vào result queue
+        try:
+            result_queue.put(annotated_frame, timeout=0.1)
+        except queue.Full:
+            pass
+        
         # Tính FPS
         frame_count += 1
         if frame_count % 30 == 0:
             elapsed = time.time() - start_time
             fps = frame_count / elapsed
             print(f"[INFO] FPS: {fps:.2f}")
-
-        # Luôn đưa frame đã xử lý (dù có bbox hay không) vào result queue
-        try:
-            result_queue.put(annotated_frame, timeout=0.1)
-        except queue.Full:
-            pass
 
 
 # ---------------------
@@ -371,8 +365,8 @@ if __name__ == "__main__":
     print("=" * 50)
     
     # 1. Load class names từ metadata
-    # script_dir = os.path.dirname(os.path.abspath(__file__))
-    metadata_path = os.path.join(f"{CONFIG["model_name"]}_ncnn_model", "metadata.yaml")
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    metadata_path = os.path.join(CONFIG["model_name"], "metadata.yaml")
     CONFIG["class_names"] = load_class_names_from_yaml(metadata_path)
     
     # 2. Khởi tạo camera
