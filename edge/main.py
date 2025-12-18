@@ -282,6 +282,10 @@ def inference_worker(net, frame_queue: Queue, result_queue: Queue):
     frame_count = 0
     start_time = time.time()
     
+    # Tạo extractor một lần duy nhất để tái sử dụng
+    ex = net.create_extractor()
+    ex.set_light_mode(True)  # Tiết kiệm memory
+
     while True:
         # Lấy frame từ queue
         frame = frame_queue.get()
@@ -289,13 +293,11 @@ def inference_worker(net, frame_queue: Queue, result_queue: Queue):
         
         # 1. Tiền xử lý
         mat_in = preprocess(frame, input_width, input_height)
-        
-        # 2. Tạo extractor và chạy inference
-        ex = net.create_extractor()
-        ex.set_light_mode(True)  # Tiết kiệm memory
+
+        # 2. Chạy inference
         ex.input(input_layer, mat_in)
         
-        # 3. Lấy output
+        # 3. Trích xuất output
         ret, mat_out = ex.extract(output_layer)
         
         if ret != 0:
