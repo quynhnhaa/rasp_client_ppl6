@@ -3,6 +3,7 @@ import time
 import queue
 from threading import Thread
 from queue import Queue
+import yaml
 
 # Đặt biến môi trường cho Ultralytics để tránh cảnh báo về quyền ghi.
 # Thư mục này sẽ được tạo trong cùng thư mục với script.
@@ -16,33 +17,42 @@ import cv2
 
 
 
-def load_class_names(filename="class_to_id.txt"):
-    """Tải danh sách tên class từ file text, mỗi class một dòng."""
+def load_class_names_from_yaml(metadata_path):
+    """Tải danh sách tên class từ file metadata.yaml của model."""
     try:
-        with open(filename, "r", encoding="utf-8") as f:
-            class_names = [line.strip() for line in f if line.strip()]
-        print(f"[INFO] Đã tải {len(class_names)} class từ '{filename}'.")
-        return class_names
+        with open(metadata_path, 'r', encoding='utf-8') as f:
+            metadata = yaml.safe_load(f)
+        # `names` là một dictionary {id: name}, chúng ta cần lấy list các name
+        # Sắp xếp theo key (id) để đảm bảo thứ tự đúng
+        class_names = [name for _, name in sorted(metadata['names'].items())]
+        print(f"[INFO] Đã tải {len(class_names)} class từ '{metadata_path}'.")
+        return class_names, metadata.get('imgsz', (320, 320))
     except FileNotFoundError:
-        print(f"[ERROR] Không tìm thấy file class '{filename}'. Sử dụng class mặc định ['product'].")
-        return ["product"]
+        print(f"[ERROR] Không tìm thấy file metadata '{metadata_path}'.")
+    except Exception as e:
+        print(f"[ERROR] Lỗi khi đọc file metadata: {e}")
+    return ["product"], (320, 320) # Trả về giá trị mặc định nếu có lỗi
 
 # ---------------------
 # CONFIG
 # ---------------------
 CONFIG = {
     # Trỏ trực tiếp đến thư mục NCNN model
-    "model_name": os.getenv("MODEL_NAME", "no_mosaic_sgd_0284_ncnn_model"),
+    "model_name": os.getenv("MODEL_NAME", "no_mosaic_sgd_ms_07_ncnn_model"),
     "server_ip": os.getenv("server_ip", "127.0.0.1"),
     "server_port": 5555,
     "camera_name": "raspi_cam",
-    "camera_resolution": (320, 320),
     "queue_size": 1,
     "conf_threshold": 0.45,
     "nms_threshold": 0.45,
-    # class_names sẽ được load từ model, nhưng có thể giữ lại để tham khảo
-    # "class_names": load_class_names("class_to_id.txt"),
 }
+
+# Đọc class names và resolution từ metadata.yaml
+metadata_path = os.path.join(project_dir, CONFIG["model_name"], "metadata.yaml")
+class_names, resolution = load_class_names_from_yaml(metadata_path)
+CONFIG["class_names"] = class_names
+CONFIG["camera_resolution"] = tuple(resolution) if isinstance(resolution, list) else resolution
+
 CONFIG["server_address"] = f"tcp://{CONFIG['server_ip']}:{CONFIG['server_port']}"
 
 # ---------------------
@@ -142,7 +152,7 @@ if __name__ == "__main__":
     model = YOLO(CONFIG['model_name'], task='detect')
     print("[INFO] Model loaded successfully.")
     # In tên các class mà model nhận diện được
-    print(f"[INFO] Model classes: {model.names}")
+    print(f"[INFO] Model classes (từ file metadata): {CONFIG['class_names']}")
 
     # 3. Tạo queue cho pipeline
     frame_queue = Queue(maxsize=CONFIG["queue_size"])
