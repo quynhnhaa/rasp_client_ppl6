@@ -365,8 +365,8 @@ if __name__ == "__main__":
     print("=" * 50)
     
     # 1. Load class names từ metadata
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    metadata_path = os.path.join(CONFIG["model_name"], "metadata.yaml")
+    # script_dir = os.path.dirname(os.path.abspath(__file__))
+    metadata_path = os.path.join(f"{CONFIG["model_name"]}_ncnn_model", "metadata.yaml")
     CONFIG["class_names"] = load_class_names_from_yaml(metadata_path)
     
     # 2. Khởi tạo camera
