@@ -104,7 +104,7 @@ def preprocess(frame, input_width, input_height):
     Tiền xử lý frame ảnh trước khi đưa vào mô hình NCNN.
     
     Args:
-        frame: Ảnh BGR từ camera (numpy array HWC)
+        frame: Ảnh RGB từ camera (numpy array HWC)
         input_width: Chiều rộng input của model
         input_height: Chiều cao input của model
     
@@ -114,19 +114,16 @@ def preprocess(frame, input_width, input_height):
     # Resize ảnh về kích thước input của model
     img = cv2.resize(frame, (input_width, input_height))
 
-    # Chuyển đổi từ RGB (từ Picamera2) sang BGR vì ncnn.Mat.from_pixels
-    # mặc định xử lý BGR tốt hơn khi không chỉ định rõ.
-    img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-
     # Tạo ncnn.Mat từ pixels
-    # from_pixels nhận: data, pixel_type, width, height
-    mat_in = ncnn.Mat.from_pixels( # Mặc định là PIXEL_BGR
-        img_bgr,
-        ncnn.Mat.PixelType.PIXEL_BGR,
+    # Picamera2 cung cấp ảnh RGB, nên ta chỉ định PIXEL_RGB.
+    # from_pixels nhận: data, pixel_type, width, height.
+    mat_in = ncnn.Mat.from_pixels(
+        img,
+        ncnn.Mat.PixelType.PIXEL_RGB,
         input_width, 
         input_height
     )
-    
+
     # Chuẩn hóa: (pixel - mean) * norm
     # Với mean=0 và norm=1/255, kết quả là pixel/255 (chuẩn hóa về [0, 1])
     mean_vals = [0.0, 0.0, 0.0]
