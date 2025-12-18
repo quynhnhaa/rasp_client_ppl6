@@ -65,7 +65,7 @@ def load_ncnn_model(model_name, num_threads=4):
     # Thông thường khi export từ YOLO sẽ có folder: model_name_ncnn_model/
     model_dir = f"{model_name}_ncnn_model"
     param_path = os.path.join(model_dir, "model.ncnn.param")
-    bin_path = os.path.join(model_dir, "model.ncnn.bin")
+    bin_path = os.path.join(model_dir, f"model.ncnn.bin")
     
     # Kiểm tra file tồn tại
     if not os.path.exists(param_path):
@@ -112,16 +112,15 @@ def preprocess(frame, input_width, input_height):
     """
     # Resize ảnh về kích thước input của model
     img = cv2.resize(frame, (input_width, input_height))
-
-    # Chuyển đổi từ RGB (từ Picamera2) sang BGR vì ncnn.Mat.from_pixels
-    # mặc định xử lý BGR tốt hơn khi không chỉ định rõ.
-    img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-
+    
+    # Chuyển từ BGR (OpenCV) sang RGB
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    
     # Tạo ncnn.Mat từ pixels
     # from_pixels nhận: data, pixel_type, width, height
-    mat_in = ncnn.Mat.from_pixels( # Mặc định là PIXEL_BGR
-        img_bgr,
-        ncnn.Mat.PixelType.PIXEL_BGR,
+    mat_in = ncnn.Mat.from_pixels(
+        img, 
+        ncnn.Mat.PixelType.PIXEL_RGB,
         input_width, 
         input_height
     )
@@ -255,7 +254,9 @@ def camera_worker(picam2, frame_queue: Queue):
             pass
 
 
-
+# ---------------------
+# Thread 2: Inference
+# ---------------------
 # ---------------------
 # Thread 2: Inference (Optimized)
 # ---------------------
@@ -356,7 +357,7 @@ def inference_worker(net, frame_queue: Queue, result_queue: Queue):
             
         # Giải phóng memory (optional, Python GC sẽ tự làm)
         del ex, mat_in, mat_out
-
+        
 # ---------------------
 # Thread 3: Gửi qua imagezmq
 # ---------------------
@@ -392,7 +393,7 @@ if __name__ == "__main__":
     
     # 1. Load class names từ metadata
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    metadata_path = os.path.join(CONFIG["model_name"], "metadata.yaml")
+    metadata_path = os.path.join(script_dir, "metadata.yaml")
     CONFIG["class_names"] = load_class_names_from_yaml(metadata_path)
     
     # 2. Khởi tạo camera
