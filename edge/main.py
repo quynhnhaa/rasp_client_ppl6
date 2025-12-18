@@ -21,6 +21,7 @@ def load_class_names_from_yaml(metadata_path):
         # Sắp xếp theo key (id) để đảm bảo thứ tự đúng
         class_names = [name for _, name in sorted(metadata['names'].items())]
         print(f"[INFO] Đã tải {len(class_names)} class từ '{metadata_path}'.")
+        print(f"[INFO] Danh sách class: {class_names}")
         return class_names
     except Exception as e:
         print(f"[ERROR] Lỗi khi đọc file metadata: {e}. Sử dụng class mặc định.")
@@ -65,7 +66,7 @@ def load_ncnn_model(model_name, num_threads=4):
     # Thông thường khi export từ YOLO sẽ có folder: model_name_ncnn_model/
     model_dir = f"{model_name}_ncnn_model"
     param_path = os.path.join(model_dir, "model.ncnn.param")
-    bin_path = os.path.join(model_dir, f"model.ncnn.bin")
+    bin_path = os.path.join(model_dir, "model.ncnn.bin")
     
     # Kiểm tra file tồn tại
     if not os.path.exists(param_path):
@@ -112,15 +113,16 @@ def preprocess(frame, input_width, input_height):
     """
     # Resize ảnh về kích thước input của model
     img = cv2.resize(frame, (input_width, input_height))
-    
-    # Chuyển từ BGR (OpenCV) sang RGB
-    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    
+
+    # Chuyển đổi từ RGB (từ Picamera2) sang BGR vì ncnn.Mat.from_pixels
+    # mặc định xử lý BGR tốt hơn khi không chỉ định rõ.
+    img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+
     # Tạo ncnn.Mat từ pixels
     # from_pixels nhận: data, pixel_type, width, height
-    mat_in = ncnn.Mat.from_pixels(
-        img, 
-        ncnn.Mat.PixelType.PIXEL_RGB,
+    mat_in = ncnn.Mat.from_pixels( # Mặc định là PIXEL_BGR
+        img_bgr,
+        ncnn.Mat.PixelType.PIXEL_BGR,
         input_width, 
         input_height
     )
@@ -257,9 +259,6 @@ def camera_worker(picam2, frame_queue: Queue):
 # ---------------------
 # Thread 2: Inference
 # ---------------------
-# ---------------------
-# Thread 2: Inference (Optimized)
-# ---------------------
 def inference_worker(net, frame_queue: Queue, result_queue: Queue):
     """
     Thread worker để chạy inference trên các frame.
@@ -269,17 +268,12 @@ def inference_worker(net, frame_queue: Queue, result_queue: Queue):
         frame_queue: Queue chứa frame từ camera
         result_queue: Queue để đưa frame đã xử lý
     """
-    # Cache các config để tránh lookup dict mỗi lần
     input_width, input_height = CONFIG["input_size"]
     conf_threshold = CONFIG["conf_threshold"]
     nms_threshold = CONFIG["nms_threshold"]
     class_names = CONFIG["class_names"]
     input_layer = CONFIG["input_layer"]
     output_layer = CONFIG["output_layer"]
-    
-    # Pre-compute normalization values
-    mean_vals = [0.0, 0.0, 0.0]
-    norm_vals = [1.0 / 255.0, 1.0 / 255.0, 1.0 / 255.0]
     
     print(f"[INFO] Inference worker started")
     print(f"[INFO] Input size: {input_width}x{input_height}")
@@ -293,47 +287,29 @@ def inference_worker(net, frame_queue: Queue, result_queue: Queue):
         # Lấy frame từ queue
         frame = frame_queue.get()
         
-        # Frame từ Picamera2 với format RGB888 là RGB
-        # Chuyển sang BGR cho OpenCV xử lý
-        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
         
-        # ===== 1. Tiền xử lý =====
-        # Resize ảnh
-        img_resized = cv2.resize(frame_bgr, (input_width, input_height))
-        # Chuyển BGR -> RGB
-        img_rgb = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
+        # 1. Tiền xử lý
+        mat_in = preprocess(frame, input_width, input_height)
         
-        # Tạo ncnn.Mat từ pixels
-        mat_in = ncnn.Mat.from_pixels(
-            img_rgb, 
-            ncnn.Mat.PixelType.PIXEL_RGB,
-            input_width, 
-            input_height
-        )
-        # Chuẩn hóa
-        mat_in.substract_mean_normalize(mean_vals, norm_vals)
-        
-        # ===== 2. Inference =====
-        # Tạo extractor mới cho mỗi inference (đây là cách chuẩn của NCNN)
+        # 2. Tạo extractor và chạy inference
         ex = net.create_extractor()
-        ex.set_light_mode(True)  # Giải phóng blob ngay sau khi extract
-        
-        # Set input
+        ex.set_light_mode(True)  # Tiết kiệm memory
         ex.input(input_layer, mat_in)
         
-        # Extract output
+        # 3. Lấy output
         ret, mat_out = ex.extract(output_layer)
         
         if ret != 0:
             print(f"[WARNING] Lỗi khi extract output: {ret}")
             continue
         
-        # ===== 3. Chuyển output sang numpy =====
+        # 4. Chuyển đổi output từ ncnn.Mat sang numpy array
+        # NCNN Mat có thể có nhiều chiều, cần reshape phù hợp
         output = np.array(mat_out)
         
-        # ===== 4. Hậu xử lý =====
+        # 5. Hậu xử lý - vẽ bounding box
         annotated_frame = postprocess(
-            frame_bgr.copy(),
+            frame.copy(),  # Copy để không ảnh hưởng frame gốc
             output,
             conf_threshold,
             nms_threshold,
@@ -354,10 +330,8 @@ def inference_worker(net, frame_queue: Queue, result_queue: Queue):
             elapsed = time.time() - start_time
             fps = frame_count / elapsed
             print(f"[INFO] FPS: {fps:.2f}")
-            
-        # Giải phóng memory (optional, Python GC sẽ tự làm)
-        del ex, mat_in, mat_out
-        
+
+
 # ---------------------
 # Thread 3: Gửi qua imagezmq
 # ---------------------
@@ -392,8 +366,8 @@ if __name__ == "__main__":
     print("=" * 50)
     
     # 1. Load class names từ metadata
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    metadata_path = os.path.join(script_dir, "metadata.yaml")
+    # script_dir = os.path.dirname(os.path.abspath(__file__))
+    metadata_path = os.path.join(f"{CONFIG["model_name"]}_ncnn_model", "metadata.yaml")
     CONFIG["class_names"] = load_class_names_from_yaml(metadata_path)
     
     # 2. Khởi tạo camera
