@@ -130,24 +130,26 @@ def postprocess(frame, outputs, conf_threshold, nms_threshold, class_names):
     # Áp dụng Non-Maximum Suppression để loại bỏ các box trùng lặp
     indices = cv2.dnn.NMSBoxes(boxes, scores, conf_threshold, nms_threshold)
 
-    if len(indices) == 0:
-        return frame
+    # Kiểm tra xem NMS có trả về bất kỳ chỉ số nào không.
+    # NMSBoxes có thể trả về một tuple rỗng.
+    if indices is not None and len(indices) > 0:
+        # indices là một mảng 2D, ví dụ [[0], [2]]. Chúng ta cần flatten nó.
+        for i in indices.flatten():
+            x, y, w, h = boxes[i]
+            score = scores[i]
+            class_id = class_ids[i]
+            
+            # Kiểm tra an toàn để tránh lỗi IndexError
+            if class_id < len(class_names):
+                label = f"{class_names[class_id]}: {score:.2f}"
+            else:
+                label = f"ID_{class_id}: {score:.2f}" # Hiển thị ID nếu không tìm thấy tên class
 
-    for i in indices.flatten():
-        x, y, w, h = boxes[i]
-        score = scores[i]
-        class_id = class_ids[i]
-        
-        # Kiểm tra an toàn để tránh lỗi IndexError
-        if class_id < len(class_names):
-            label = f"{class_names[class_id]}: {score:.2f}"
-        else:
-            label = f"ID_{class_id}: {score:.2f}" # Hiển thị ID nếu không tìm thấy tên class
+            # Vẽ trực tiếp lên frame đầu vào (in-place modification)
+            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+            cv2.putText(frame, label, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
-        # Vẽ bounding box và label lên ảnh
-        cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-        cv2.putText(frame, label, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-
+    # Trả về frame đã được sửa đổi (hoặc frame gốc nếu không có gì để vẽ)
     return frame
 
 
@@ -200,7 +202,7 @@ def inference_worker(net: ncnn.Net, frame_queue: Queue, result_queue: Queue):
 
         # 3. Post-processing
         annotated_frame = postprocess(
-            frame,
+            frame, # frame được sửa đổi trực tiếp trong hàm postprocess
             outputs, 
             CONFIG["conf_threshold"], 
             CONFIG["nms_threshold"],
