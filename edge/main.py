@@ -115,12 +115,13 @@ def postprocess_ncnn(frame, outputs, conf_threshold, nms_threshold, class_names)
     detections = detections.reshape(4 + num_classes, -1).T
     
     for row in detections:
-        # Lấy điểm tin cậy của các class (từ cột thứ 4 trở đi)
+        # Cấu trúc output: [cx, cy, w, h, class_score_1, class_score_2, ...]
+        # Lấy điểm tin cậy của các lớp (từ cột thứ 4 trở đi)
         class_scores = row[4:]
         class_id = np.argmax(class_scores)
         max_score = class_scores[class_id]
         
-        if max_score > conf_threshold:
+        if max_score >= conf_threshold:
             # Lấy tọa độ bounding box (cx, cy, w, h)
             cx, cy, w, h = row[:4]
             
