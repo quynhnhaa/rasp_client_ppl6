@@ -1,5 +1,6 @@
 import os
 import json
+import gc
 import time
 import queue
 from threading import Thread
@@ -40,7 +41,7 @@ CONFIG = {
     "server_ip": os.getenv("server_ip", "127.0.0.1"),
     "server_port": 5555,
     "camera_name": "raspi_cam",
-    "queue_size": 1,
+    "queue_size": 2, # Tăng buffer lên 3 để tránh blocking dây chuyền
     "conf_threshold": 0.45,
     "nms_threshold": 0.45,
 }
@@ -74,6 +75,7 @@ def camera_worker(picam2, frame_queue: Queue):
 # ---------------------
 def inference_worker(model: YOLO, frame_queue: Queue, detection_queue: Queue, sender_frame_queue: Queue):
     prev_time = time.time()
+    count_gc = 0
     while True:
         frame = frame_queue.get()
 
@@ -110,6 +112,20 @@ def inference_worker(model: YOLO, frame_queue: Queue, detection_queue: Queue, se
             "time": time.time(),
             "counter": frame_counter
         })
+
+        # --- GIẢI PHÓNG BỘ NHỚ THỦ CÔNG ---
+        # Xóa các biến nặng ngay lập tức để tránh OOM trên Pi Zero 2W
+        del frame
+        del results
+        del result
+        # annotated đã được put vào queue, sender sẽ lo, ở đây ta xóa tham chiếu cục bộ
+        del annotated
+        
+        # Ép chạy Garbage Collection mỗi 30 frame để dọn sạch RAM
+        count_gc += 1
+        if count_gc > 30:
+            gc.collect()
+            count_gc = 0
 
 # ---------------------
 # THREAD 3: SCAN FSM
@@ -201,10 +217,10 @@ if __name__ == "__main__":
     model = YOLO(CONFIG["model_name"], task="detect")
 
     # Queues
-    frame_queue = Queue(maxsize=1)
-    detection_queue = Queue(maxsize=1)
-    result_queue = Queue(maxsize=1)
-    sender_frame_queue = Queue(maxsize=1) # Queue mới chuyên chở frame
+    frame_queue = Queue(maxsize=CONFIG["queue_size"])
+    detection_queue = Queue(maxsize=CONFIG["queue_size"])
+    result_queue = Queue(maxsize=CONFIG["queue_size"])
+    sender_frame_queue = Queue(maxsize=CONFIG["queue_size"])
 
     # Threads
     Thread(target=camera_worker, args=(picam2, frame_queue), daemon=True).start()
