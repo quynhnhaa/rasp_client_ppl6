@@ -75,65 +75,64 @@ def inference_worker(model: YOLO, frame_queue: Queue, result_queue: Queue, class
     frame_count = 0
     fps = 0
 
-    # Tạo bảng màu cố định cho từng class (để mỗi class có màu riêng)
-    np.random.seed(42) # Seed để màu giống nhau mỗi lần chạy lại
-    colors = [tuple(map(int, color)) for color in np.random.randint(0, 255, size=(len(class_names), 3))]
-
     while True:
-        annotated_frame = frame_queue.get() # Lấy frame và vẽ trực tiếp lên nó
+        frame = frame_queue.get()
 
-        # 1. Inference với ultralytics
-        # Thư viện tự động xử lý pre-processing, inference và post-processing (NMS)
         results = model.predict(
-            source=annotated_frame,
+            source=frame,
             conf=CONFIG["conf_threshold"],
             iou=CONFIG["nms_threshold"],
-            verbose=False 
+            verbose=False
         )
 
-        # 2. Vẽ bounding box và thu thập các class đã phát hiện
+        r = results[0]
+
         detected_labels = []
-        for box in results[0].boxes:
-            # Lấy tọa độ và chuyển sang kiểu integer
-            x1, y1, x2, y2 = map(int, box.xyxy[0])
-            # Lấy điểm tin cậy (confidence)
-            conf = box.conf[0]
-            # Lấy ID của class
-            cls_id = int(box.cls[0])
 
-            # Lấy màu tương ứng với class ID
-            color = colors[cls_id % len(colors)]
-            
-            # Lấy tên class và thêm vào danh sách để đếm
-            label_name = class_names[cls_id]
-            detected_labels.append(label_name)
+        if r.boxes is not None:
+            boxes = r.boxes.xyxy.cpu().numpy()
+            classes = r.boxes.cls.cpu().numpy().astype(int)
+            scores = r.boxes.conf.cpu().numpy()
 
-            # Tạo label để hiển thị trên ảnh
-            display_label = f"{label_name}: {conf:.2f}"
+            for box, cls_id, conf in zip(boxes, classes, scores):
+                if conf < CONFIG["conf_threshold"]:
+                    continue
 
-            # Vẽ bounding box và label lên frame
-            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
-            cv2.putText(annotated_frame, display_label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 2)
+                label = CONFIG["class_names"][cls_id]
+                detected_labels.append(label)
 
-        # # Đếm số lượng mỗi loại đối tượng và in ra console
-        # if detected_labels:
-        #     label_counts = Counter(detected_labels)
-        #     for lbl, cnt in label_counts.items():
-        #         print(f'"label": {lbl}, "quantity": {cnt}')
+                x1, y1, x2, y2 = map(int, box)
 
-        # 3. Tính toán và vẽ FPS
+                # vẽ box (tối giản)
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (0,255,0), 1)
+
+                # vẽ text class
+                cv2.putText(frame,label,(x1, y1 - 4),cv2.FONT_HERSHEY_SIMPLEX,0.4,(0,255,0),1)
+
+        # -------------------------
+        # ĐẾM SỐ LƯỢNG THEO CLASS
+        # -------------------------
+        if detected_labels:
+            label_counts = Counter(detected_labels)
+            print("Detections:", end=" ")
+            for lbl, cnt in label_counts.items():
+                print(f'"label": {lbl}, "quantity": {cnt}', end=" | ")
+            print()
+
+        # -------------------------
+        # FPS
+        # -------------------------
         frame_count += 1
         elapsed_time = time.time() - start_time
         if elapsed_time > 1.0:
             fps = frame_count / elapsed_time
             start_time = time.time()
             frame_count = 0
-        
-        cv2.putText(annotated_frame, f"FPS: {fps:.2f}", (10, 30),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
+
+        cv2.putText(frame,f"FPS: {fps:.2f}",(10, 30),cv2.FONT_HERSHEY_SIMPLEX,0.4,(0, 255, 0),1)
 
         try:
-            result_queue.put(annotated_frame, timeout=0.1)
+            result_queue.put(frame, timeout=0.1)
         except queue.Full:
             pass
 
