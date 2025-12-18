@@ -50,10 +50,6 @@ CONFIG["server_address"] = f"tcp://{CONFIG['server_ip']}:{CONFIG['server_port']}
 # Hàm load NCNN model
 # ---------------------
 def load_ncnn_model(model_name):
-    # if not os.path.isfile(model_name):
-    #     print(f"[ERROR] Khong tim thay file mo hinh: {model_name}")
-    #     raise FileNotFoundError(model_name)
-        
     export_dir = os.path.splitext(model_name)[0] + "_ncnn_model"
     param_path = os.path.join(export_dir, "model.ncnn.param")
     bin_path = os.path.join(export_dir, "model.ncnn.bin")
@@ -133,6 +129,7 @@ def postprocess(frame, outputs, conf_threshold, nms_threshold, class_names):
 
     # Áp dụng Non-Maximum Suppression để loại bỏ các box trùng lặp
     indices = cv2.dnn.NMSBoxes(boxes, scores, conf_threshold, nms_threshold)
+
     if len(indices) == 0:
         return frame
 
@@ -179,7 +176,6 @@ def inference_worker(net: ncnn.Net, frame_queue: Queue, result_queue: Queue):
         )
         
         mat_in.substract_mean_normalize([0.0, 0.0, 0.0], [1/255.0, 1/255.0, 1/255.0])
-        # mat_in.substract_mean_normalize([], [1 / 255.0, 1 / 255.0, 1 / 255.0])
         # 2. Inference - KHÔNG cần set_num_threads ở đây
         ex = net.create_extractor()
         
@@ -204,7 +200,7 @@ def inference_worker(net: ncnn.Net, frame_queue: Queue, result_queue: Queue):
 
         # 3. Post-processing
         annotated_frame = postprocess(
-            frame, 
+            frame,
             outputs, 
             CONFIG["conf_threshold"], 
             CONFIG["nms_threshold"],
