@@ -36,8 +36,8 @@ def load_class_names_from_yaml(metadata_path):
 # CONFIG
 # ---------------------
 CONFIG = {
-    "model_name": "no_mosaic_sgd_ms_07_ncnn_model",
-    "server_ip": "127.0.0.1",
+    "model_name": os.getenv("MODEL_NAME", "no_mosaic_sgd_ms_07_ncnn_model"),
+    "server_ip": os.getenv("server_ip", "127.0.0.1"),
     "server_port": 5555,
     "camera_name": "raspi_cam",
     "queue_size": 1,

@@ -1,4 +1,5 @@
 import cv2
+import json
 import imagezmq
 import traceback
 
@@ -19,7 +20,16 @@ def main():
         while True:
             # Nhận tên camera và khung hình từ client
             # Lệnh này sẽ block cho đến khi có ảnh mới
-            cam_name, frame = image_hub.recv_image()
+            msg, frame = image_hub.recv_image()
+
+            try:
+                data = json.loads(msg)
+                cam_name = data.get("camera_name", "Unknown")
+                current = data.get("current", {})
+                total = data.get("total", {})
+                print(f"[{cam_name}] Scanning: {current} | Total: {total}")
+            except (json.JSONDecodeError, TypeError):
+                cam_name = msg
 
             # In thông báo nếu đây là client mới
             if cam_name not in connected_clients:
