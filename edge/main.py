@@ -255,8 +255,9 @@ def camera_worker(picam2, frame_queue: Queue):
             pass
 
 
+
 # ---------------------
-# Thread 2: Inference
+# Thread 2: Inference (Optimized)
 # ---------------------
 def inference_worker(net, frame_queue: Queue, result_queue: Queue):
     """
@@ -267,12 +268,17 @@ def inference_worker(net, frame_queue: Queue, result_queue: Queue):
         frame_queue: Queue chứa frame từ camera
         result_queue: Queue để đưa frame đã xử lý
     """
+    # Cache các config để tránh lookup dict mỗi lần
     input_width, input_height = CONFIG["input_size"]
     conf_threshold = CONFIG["conf_threshold"]
     nms_threshold = CONFIG["nms_threshold"]
     class_names = CONFIG["class_names"]
     input_layer = CONFIG["input_layer"]
     output_layer = CONFIG["output_layer"]
+    
+    # Pre-compute normalization values
+    mean_vals = [0.0, 0.0, 0.0]
+    norm_vals = [1.0 / 255.0, 1.0 / 255.0, 1.0 / 255.0]
     
     print(f"[INFO] Inference worker started")
     print(f"[INFO] Input size: {input_width}x{input_height}")
@@ -282,35 +288,51 @@ def inference_worker(net, frame_queue: Queue, result_queue: Queue):
     frame_count = 0
     start_time = time.time()
     
-    # Tạo extractor một lần duy nhất để tái sử dụng
-    ex = net.create_extractor()
-    ex.set_light_mode(True)  # Tiết kiệm memory
-
     while True:
         # Lấy frame từ queue
         frame = frame_queue.get()
         
+        # Frame từ Picamera2 với format RGB888 là RGB
+        # Chuyển sang BGR cho OpenCV xử lý
+        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
         
-        # 1. Tiền xử lý
-        mat_in = preprocess(frame, input_width, input_height)
-
-        # 2. Chạy inference
+        # ===== 1. Tiền xử lý =====
+        # Resize ảnh
+        img_resized = cv2.resize(frame_bgr, (input_width, input_height))
+        # Chuyển BGR -> RGB
+        img_rgb = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
+        
+        # Tạo ncnn.Mat từ pixels
+        mat_in = ncnn.Mat.from_pixels(
+            img_rgb, 
+            ncnn.Mat.PixelType.PIXEL_RGB,
+            input_width, 
+            input_height
+        )
+        # Chuẩn hóa
+        mat_in.substract_mean_normalize(mean_vals, norm_vals)
+        
+        # ===== 2. Inference =====
+        # Tạo extractor mới cho mỗi inference (đây là cách chuẩn của NCNN)
+        ex = net.create_extractor()
+        ex.set_light_mode(True)  # Giải phóng blob ngay sau khi extract
+        
+        # Set input
         ex.input(input_layer, mat_in)
         
-        # 3. Trích xuất output
+        # Extract output
         ret, mat_out = ex.extract(output_layer)
         
         if ret != 0:
             print(f"[WARNING] Lỗi khi extract output: {ret}")
             continue
         
-        # 4. Chuyển đổi output từ ncnn.Mat sang numpy array
-        # NCNN Mat có thể có nhiều chiều, cần reshape phù hợp
+        # ===== 3. Chuyển output sang numpy =====
         output = np.array(mat_out)
         
-        # 5. Hậu xử lý - vẽ bounding box
+        # ===== 4. Hậu xử lý =====
         annotated_frame = postprocess(
-            frame.copy(),  # Copy để không ảnh hưởng frame gốc
+            frame_bgr.copy(),
             output,
             conf_threshold,
             nms_threshold,
@@ -331,7 +353,9 @@ def inference_worker(net, frame_queue: Queue, result_queue: Queue):
             elapsed = time.time() - start_time
             fps = frame_count / elapsed
             print(f"[INFO] FPS: {fps:.2f}")
-
+            
+        # Giải phóng memory (optional, Python GC sẽ tự làm)
+        del ex, mat_in, mat_out
 
 # ---------------------
 # Thread 3: Gửi qua imagezmq
