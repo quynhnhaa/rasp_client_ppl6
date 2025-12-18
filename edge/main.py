@@ -201,7 +201,6 @@ def inference_worker(net, frame_queue: Queue, result_queue: Queue):
         
         # 2. Inference với NCNN
         ex = net.create_extractor()
-        ex.set_num_threads(CONFIG["num_threads"])
         
         # Chuyển đổi numpy array sang ncnn.Mat
         in_mat = ncnn.Mat.from_pixels(
