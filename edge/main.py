@@ -275,7 +275,6 @@ def inference_worker(model: ncnn.Net,
 
         # Suy luận với NCNN
         ex = model.create_extractor()
-        ex.set_num_threads(num_threads)
         ex.input(input_layer, in_mat)
 
         out = ncnn.Mat()
