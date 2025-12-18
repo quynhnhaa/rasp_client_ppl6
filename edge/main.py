@@ -155,7 +155,10 @@ def postprocess(frame, output, conf_threshold, nms_threshold, class_names, input
     Returns:
         Frame đã được vẽ bounding box
     """
-    frame_height, frame_width = frame.shape[:2]
+    # Tạo một bản sao của frame để vẽ lên, đảm bảo frame gốc không bị thay đổi.
+    annotated_frame = frame.copy()
+
+    frame_height, frame_width = annotated_frame.shape[:2]
     
     # Tỷ lệ scale giữa ảnh gốc và ảnh input
     x_factor = frame_width / input_width
@@ -199,12 +202,12 @@ def postprocess(frame, output, conf_threshold, nms_threshold, class_names, input
 
     # Áp dụng Non-Maximum Suppression để loại bỏ các box trùng lặp
     if len(boxes) == 0:
-        return frame
+        return annotated_frame
         
     indices = cv2.dnn.NMSBoxes(boxes, scores, conf_threshold, nms_threshold)
     
     if len(indices) == 0:
-        return frame
+        return annotated_frame
 
     # Vẽ các bounding box lên ảnh
     for i in indices.flatten():
@@ -219,14 +222,14 @@ def postprocess(frame, output, conf_threshold, nms_threshold, class_names, input
             label = f"ID_{class_id}: {score:.2f}"
 
         # Vẽ bounding box
-        cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+        cv2.rectangle(annotated_frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
         
         # Vẽ background cho text
         (text_width, text_height), _ = cv2.getTextSize(
             label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1
         )
         cv2.rectangle(
-            frame, 
+            annotated_frame, 
             (x, y - text_height - 10), 
             (x + text_width, y), 
             (0, 255, 0), 
@@ -235,11 +238,11 @@ def postprocess(frame, output, conf_threshold, nms_threshold, class_names, input
         
         # Vẽ text
         cv2.putText(
-            frame, label, (x, y - 5), 
+            annotated_frame, label, (x, y - 5), 
             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1
         )
 
-    return frame
+    return annotated_frame
 
 
 # ---------------------
@@ -310,7 +313,7 @@ def inference_worker(net, frame_queue: Queue, result_queue: Queue):
         
         # 5. Hậu xử lý - vẽ bounding box
         annotated_frame = postprocess(
-            frame.copy(),  # Copy để không ảnh hưởng frame gốc
+            frame,  # Truyền frame gốc, postprocess sẽ tự copy
             output,
             conf_threshold,
             nms_threshold,
