@@ -110,13 +110,13 @@ def postprocess_ncnn(frame, outputs, conf_threshold, nms_threshold, class_names)
     # Chuyển output từ Mat sang numpy array
     detections = np.array(outputs)
     
-    # Reshape về đúng kích thước (5, 2100) và chuyển vị thành (2100, 5)
+    # Reshape về đúng kích thước (4 + num_classes, num_boxes) và chuyển vị thành (num_boxes, 4 + num_classes)
     num_classes = len(class_names)
-    detections = detections.reshape(5 + num_classes, -1).T
+    detections = detections.reshape(4 + num_classes, -1).T
     
     for row in detections:
         # Lấy điểm tin cậy của các class (từ cột thứ 4 trở đi)
-        class_scores = row[4:4 + num_classes]
+        class_scores = row[4:]
         class_id = np.argmax(class_scores)
         max_score = class_scores[class_id]
         
