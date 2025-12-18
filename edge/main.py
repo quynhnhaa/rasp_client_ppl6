@@ -112,7 +112,8 @@ def preprocess(frame, input_width, input_height):
         ncnn.Mat đã được chuẩn hóa
     """
     # Resize ảnh về kích thước input của model
-    img = cv2.resize(frame, (input_width, input_height))
+    # Luôn tạo một bản sao để đảm bảo frame gốc không bao giờ bị thay đổi
+    img = cv2.resize(frame.copy(), (input_width, input_height))
 
     # Chuyển đổi từ RGB (từ Picamera2) sang BGR vì ncnn.Mat.from_pixels
     # mặc định xử lý BGR tốt hơn khi không chỉ định rõ.
