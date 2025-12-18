@@ -319,18 +319,18 @@ def inference_worker(net, frame_queue: Queue, result_queue: Queue):
             input_height
         )
         
-        # Đưa frame đã xử lý vào result queue
-        try:
-            result_queue.put(annotated_frame, timeout=0.1)
-        except queue.Full:
-            pass
-        
         # Tính FPS
         frame_count += 1
         if frame_count % 30 == 0:
             elapsed = time.time() - start_time
             fps = frame_count / elapsed
             print(f"[INFO] FPS: {fps:.2f}")
+
+        # Luôn đưa frame đã xử lý (dù có bbox hay không) vào result queue
+        try:
+            result_queue.put(annotated_frame, timeout=0.1)
+        except queue.Full:
+            pass
 
 
 # ---------------------
