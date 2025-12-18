@@ -112,14 +112,14 @@ def inference_worker(model: YOLO, frame_queue: Queue, result_queue: Queue, class
             display_label = f"{label_name}: {conf:.2f}"
 
             # Vẽ bounding box và label lên frame
-            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 1)
-            cv2.putText(annotated_frame, display_label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
+            cv2.putText(annotated_frame, display_label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 2)
 
-        # Đếm số lượng mỗi loại đối tượng và in ra console
-        if detected_labels:
-            label_counts = Counter(detected_labels)
-            for lbl, cnt in label_counts.items():
-                print(f'"label": {lbl}, "quantity": {cnt}')
+        # # Đếm số lượng mỗi loại đối tượng và in ra console
+        # if detected_labels:
+        #     label_counts = Counter(detected_labels)
+        #     for lbl, cnt in label_counts.items():
+        #         print(f'"label": {lbl}, "quantity": {cnt}')
 
         # 3. Tính toán và vẽ FPS
         frame_count += 1
@@ -130,7 +130,7 @@ def inference_worker(model: YOLO, frame_queue: Queue, result_queue: Queue, class
             frame_count = 0
         
         cv2.putText(annotated_frame, f"FPS: {fps:.2f}", (10, 30),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 1)
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
 
         try:
             result_queue.put(annotated_frame, timeout=0.1)
