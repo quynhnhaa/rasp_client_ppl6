@@ -9,33 +9,36 @@ import imagezmq
 import cv2
 import ncnn
 import numpy as np
+import yaml
 
 
-def load_class_names(filename="class_to_id.txt"):
-    """Tải danh sách tên class từ file text, mỗi class một dòng."""
+def load_class_names_from_yaml(metadata_path):
+    """Tải danh sách tên class từ file metadata.yaml của model."""
     try:
-        with open(filename, "r", encoding="utf-8") as f:
-            class_names = [line.strip() for line in f if line.strip()]
-        print(f"[INFO] Đã tải {len(class_names)} class từ '{filename}'.")
+        with open(metadata_path, 'r', encoding='utf-8') as f:
+            metadata = yaml.safe_load(f)
+        # `names` là một dictionary {id: name}, chúng ta cần lấy list các name
+        # Sắp xếp theo key (id) để đảm bảo thứ tự đúng
+        class_names = [name for _, name in sorted(metadata['names'].items())]
+        print(f"[INFO] Đã tải {len(class_names)} class từ '{metadata_path}'.")
         return class_names
-    except FileNotFoundError:
-        print(f"[ERROR] Không tìm thấy file class '{filename}'. Sử dụng class mặc định ['product'].")
-        return ["product"]
+    except Exception as e:
+        print(f"[ERROR] Lỗi khi đọc file metadata: {e}. Sử dụng class mặc định.")
+        return ["product"] # Trả về giá trị mặc định nếu có lỗi
 
 # ---------------------
 # CONFIG
 # ---------------------
 CONFIG = {
-    "model_name": os.getenv("MODEL_NAME", "no_mosaic_sgd_0284.pt"),
+    "model_name": os.getenv("MODEL_NAME", "no_mosaic_sgd_ms_07.pt"),
     "server_ip": os.getenv("server_ip", "127.0.0.1"),
     "server_port": 5555,
     "camera_name": "raspi_cam",
-    "camera_resolution": (640, 640),
+    "camera_resolution": (320, 320),
     "queue_size": 1,
-    "input_size": (640, 640),  # Phải khớp với imgsz khi export
+    "input_size": (320, 320),  # Phải khớp với imgsz khi export
     "conf_threshold": 0.45,
     "nms_threshold": 0.45,
-    "class_names": load_class_names("class_to_id.txt"),
     "input_layer": "in0",
     "output_layer": "out0",
     "num_threads": 4,  # Số threads cho inference
@@ -54,12 +57,11 @@ def load_ncnn_model(model_name):
     export_dir = os.path.splitext(model_name)[0] + "_ncnn_model"
     param_path = os.path.join(export_dir, "model.ncnn.param")
     bin_path = os.path.join(export_dir, "model.ncnn.bin")
+    metadata_path = os.path.join(export_dir, "metadata.yaml")
+    CONFIG["class_names"] = load_class_names_from_yaml(metadata_path)
 
     if not (os.path.exists(param_path) and os.path.exists(bin_path)):
         raise FileNotFoundError(f"Khong tim thay file .param hoac .bin trong: {export_dir}")
-
-    # Lấy tên layer từ file param
-    # input_name, output_name = get_ncnn_layer_names(param_path)
     CONFIG["input_layer"] = "in0"
     CONFIG["output_layer"] = "out0"
 
@@ -90,72 +92,66 @@ def camera_worker(picam2, frame_queue: Queue):
 
 # ---------------------
 # Postprocess cho YOLO11
+# Dựa trên logic từ file yolo.py
 # ---------------------
-def postprocess_yolo11(frame, outputs, conf_threshold, nms_threshold, num_classes):
-    """
-    Post-process YOLO11 NCNN output.
-    """
-    h, w = frame.shape[:2]
-    input_w, input_h = CONFIG["input_size"]
-    
-    # Scale factors
-    x_factor = w / input_w
-    y_factor = h / input_h
+def postprocess(frame, outputs, conf_threshold, nms_threshold, class_names):
+    """Hậu xử lý output của mô hình để lấy bounding box."""
+    frame_height, frame_width = frame.shape[:2]
+    input_height, input_width = CONFIG["input_size"]
+
+    # Tỷ lệ scale giữa ảnh gốc và ảnh input
+    x_factor = frame_width / input_width
+    y_factor = frame_height / input_height
 
     boxes = []
     scores = []
     class_ids = []
 
-    # Handle different output shapes
-    if len(outputs.shape) == 3:
-        outputs = outputs.squeeze(0)
-    
-    # YOLO11 output: [4 + num_classes, num_boxes]
-    # Transpose thành [num_boxes, 4 + num_classes]
-    if outputs.shape[0] == (4 + num_classes):
-        outputs = outputs.T
-    elif outputs.shape[1] == (4 + num_classes):
-        pass
-    else:
-        if outputs.shape[0] < outputs.shape[1]:
-            outputs = outputs.T
+    # Output của NCNN có thể là (1, 5, 2100) hoặc (5, 2100)
+    # Bỏ chiều batch nếu có và chuyển vị (transpose) để có shape (num_boxes, 4_coords + num_classes)
+    detections = np.squeeze(outputs).T
 
-    for detection in outputs:
-        class_scores = detection[4:4 + num_classes]
-        class_id = int(np.argmax(class_scores))
-        max_score = float(class_scores[class_id])
+    for row in detections:
+        # Lấy điểm tin cậy của các class (từ cột thứ 4 trở đi)
+        class_scores = row[4:]
+        class_id = np.argmax(class_scores)
+        max_score = class_scores[class_id]
 
         if max_score > conf_threshold:
-            cx, cy, box_w, box_h = detection[:4]
+            # Lấy tọa độ bounding box (cx, cy, w, h)
+            cx, cy, w, h = row[:4]
 
-            x1 = int((cx - box_w / 2) * x_factor)
-            y1 = int((cy - box_h / 2) * y_factor)
-            box_width = int(box_w * x_factor)
-            box_height = int(box_h * y_factor)
+            # Chuyển đổi tọa độ về kích thước ảnh gốc
+            left = int((cx - w / 2) * x_factor)
+            top = int((cy - h / 2) * y_factor)
+            width = int(w * x_factor)
+            height = int(h * y_factor)
 
-            x1 = max(0, x1)
-            y1 = max(0, y1)
-            box_width = min(box_width, w - x1)
-            box_height = min(box_height, h - y1)
+            boxes.append([left, top, width, height])
+            scores.append(float(max_score))
+            class_ids.append(int(class_id))
 
-            boxes.append([x1, y1, box_width, box_height])
-            scores.append(max_score)
-            class_ids.append(class_id)
+    # Áp dụng Non-Maximum Suppression để loại bỏ các box trùng lặp
+    indices = cv2.dnn.NMSBoxes(boxes, scores, conf_threshold, nms_threshold)
+    if len(indices) == 0:
+        return frame
 
-    final_boxes = []
-    if len(boxes) > 0:
-        indices = cv2.dnn.NMSBoxes(boxes, scores, conf_threshold, nms_threshold)
+    for i in indices.flatten():
+        x, y, w, h = boxes[i]
+        score = scores[i]
+        class_id = class_ids[i]
         
-        if len(indices) > 0:
-            for i in indices.flatten():
-                x, y, bw, bh = boxes[i]
-                final_boxes.append({
-                    "box": (x, y, x + bw, y + bh),
-                    "score": scores[i],
-                    "class_id": class_ids[i]
-                })
-    
-    return final_boxes
+        # Kiểm tra an toàn để tránh lỗi IndexError
+        if class_id < len(class_names):
+            label = f"{class_names[class_id]}: {score:.2f}"
+        else:
+            label = f"ID_{class_id}: {score:.2f}" # Hiển thị ID nếu không tìm thấy tên class
+
+        # Vẽ bounding box và label lên ảnh
+        cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+        cv2.putText(frame, label, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
+    return frame
 
 
 # ---------------------
@@ -168,7 +164,6 @@ def inference_worker(net: ncnn.Net, frame_queue: Queue, result_queue: Queue):
     first_inference = True
 
     input_w, input_h = CONFIG["input_size"]
-    num_classes = len(CONFIG["class_names"])
 
     while True:
         frame = frame_queue.get()
@@ -208,28 +203,13 @@ def inference_worker(net: ncnn.Net, frame_queue: Queue, result_queue: Queue):
             first_inference = False
 
         # 3. Post-processing
-        detections = postprocess_yolo11(
+        annotated_frame = postprocess(
             frame, 
             outputs, 
             CONFIG["conf_threshold"], 
             CONFIG["nms_threshold"],
-            num_classes
+            CONFIG["class_names"]
         )
-        
-        # Vẽ detections
-        for det in detections:
-            x1, y1, x2, y2 = det["box"]
-            score = det["score"]
-            class_id = det["class_id"]
-            
-            if 0 <= class_id < len(CONFIG['class_names']):
-                label = f"{CONFIG['class_names'][class_id]}: {score:.2f}"
-            else:
-                label = f"class_{class_id}: {score:.2f}"
-            
-            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            cv2.putText(frame, label, (x1, y1 - 10), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
         # Calculate and draw FPS
         frame_count += 1
@@ -239,13 +219,11 @@ def inference_worker(net: ncnn.Net, frame_queue: Queue, result_queue: Queue):
             start_time = time.time()
             frame_count = 0
         
-        cv2.putText(frame, f"FPS: {fps:.2f}", (10, 30), 
+        cv2.putText(annotated_frame, f"FPS: {fps:.2f}", (10, 30), 
                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-        cv2.putText(frame, f"Detections: {len(detections)}", (10, 60), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
 
         try:
-            result_queue.put(frame, timeout=0.1)
+            result_queue.put(annotated_frame, timeout=0.1)
         except queue.Full:
             pass
 
