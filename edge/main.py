@@ -104,7 +104,7 @@ def preprocess(frame, input_width, input_height):
     Tiền xử lý frame ảnh trước khi đưa vào mô hình NCNN.
     
     Args:
-        frame: Ảnh BGR từ camera (numpy array HWC)
+        frame: Ảnh RGB từ camera (numpy array HWC)
         input_width: Chiều rộng input của model
         input_height: Chiều cao input của model
     
@@ -112,17 +112,14 @@ def preprocess(frame, input_width, input_height):
         ncnn.Mat đã được chuẩn hóa
     """
     # Resize ảnh về kích thước input của model
+    # Frame đầu vào từ Picamera2 đã là RGB
     img = cv2.resize(frame, (input_width, input_height))
 
-    # Chuyển đổi từ RGB (từ Picamera2) sang BGR vì ncnn.Mat.from_pixels
-    # mặc định xử lý BGR tốt hơn khi không chỉ định rõ.
-    img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-
     # Tạo ncnn.Mat từ pixels
-    # from_pixels nhận: data, pixel_type, width, height
-    mat_in = ncnn.Mat.from_pixels( # Mặc định là PIXEL_BGR
-        img_bgr,
-        ncnn.Mat.PixelType.PIXEL_BGR,
+    # Giữ nguyên định dạng RGB
+    mat_in = ncnn.Mat.from_pixels(
+        img, 
+        ncnn.Mat.PixelType.PIXEL_RGB,
         input_width, 
         input_height
     )
@@ -190,7 +187,7 @@ def postprocess(frame, output, conf_threshold, nms_threshold, class_names, input
             # và scale về kích thước ảnh gốc
             left = int((cx - w / 2) * x_factor)
             top = int((cy - h / 2) * y_factor)
-            width = int(w * x_factor)
+            width = int(w * x_factor) 
             height = int(h * y_factor)
 
             boxes.append([left, top, width, height])
@@ -281,19 +278,20 @@ def inference_worker(net, frame_queue: Queue, result_queue: Queue):
     print(f"[INFO] NMS threshold: {nms_threshold}")
     
     frame_count = 0
-    start_time = time.time()
+    start_time = time.time() 
+    
+    # Tạo extractor một lần và tái sử dụng để tiết kiệm bộ nhớ
+    ex = net.create_extractor()
+    ex.set_light_mode(True)  # Tiết kiệm memory
     
     while True:
         # Lấy frame từ queue
         frame = frame_queue.get()
         
-        
         # 1. Tiền xử lý
         mat_in = preprocess(frame, input_width, input_height)
         
-        # 2. Tạo extractor và chạy inference
-        ex = net.create_extractor()
-        ex.set_light_mode(True)  # Tiết kiệm memory
+        # 2. Chạy inference trên extractor đã được tạo
         ex.input(input_layer, mat_in)
         
         # 3. Lấy output
@@ -309,7 +307,7 @@ def inference_worker(net, frame_queue: Queue, result_queue: Queue):
         
         # 5. Hậu xử lý - vẽ bounding box
         annotated_frame = postprocess(
-            frame.copy(),  # Copy để không ảnh hưởng frame gốc
+            frame,  # Vẽ trực tiếp lên frame, không cần copy
             output,
             conf_threshold,
             nms_threshold,
