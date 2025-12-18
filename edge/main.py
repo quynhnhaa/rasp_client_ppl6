@@ -113,8 +113,7 @@ def preprocess(frame, input_width, input_height):
     # Resize ảnh về kích thước input của model
     img = cv2.resize(frame, (input_width, input_height))
     
-    # Chuyển từ BGR (OpenCV) sang RGB
-    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
     
     # Tạo ncnn.Mat từ pixels
     # from_pixels nhận: data, pixel_type, width, height
@@ -285,12 +284,9 @@ def inference_worker(net, frame_queue: Queue, result_queue: Queue):
         # Lấy frame từ queue
         frame = frame_queue.get()
         
-        # Frame từ Picamera2 với format RGB888 là RGB
-        # Chuyển sang BGR cho OpenCV xử lý
-        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
         
         # 1. Tiền xử lý
-        mat_in = preprocess(frame_bgr, input_width, input_height)
+        mat_in = preprocess(frame, input_width, input_height)
         
         # 2. Tạo extractor và chạy inference
         ex = net.create_extractor()
@@ -310,7 +306,7 @@ def inference_worker(net, frame_queue: Queue, result_queue: Queue):
         
         # 5. Hậu xử lý - vẽ bounding box
         annotated_frame = postprocess(
-            frame_bgr.copy(),  # Copy để không ảnh hưởng frame gốc
+            frame.copy(),  # Copy để không ảnh hưởng frame gốc
             output,
             conf_threshold,
             nms_threshold,
