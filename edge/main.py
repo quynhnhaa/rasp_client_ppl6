@@ -64,8 +64,8 @@ def load_ncnn_model(model_name, num_threads=4):
     # Đường dẫn đến file model NCNN
     # Thông thường khi export từ YOLO sẽ có folder: model_name_ncnn_model/
     model_dir = f"{model_name}_ncnn_model"
-    param_path = os.path.join(model_dir, f"{model_name}.ncnn.param")
-    bin_path = os.path.join(model_dir, f"{model_name}.ncnn.bin")
+    param_path = os.path.join(model_dir, "model.ncnn.param")
+    bin_path = os.path.join(model_dir, "model.ncnn.bin")
     
     # Kiểm tra file tồn tại
     if not os.path.exists(param_path):
