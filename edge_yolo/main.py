@@ -177,14 +177,18 @@ def inference_worker(model: YOLO, frame_queue: Queue, detection_queue: Queue, se
         # Draw FPS
         cv2.putText(annotated, f"FPS: {fps:.1f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
 
-        # Đẩy frame trực tiếp cho Sender
-        sender_frame_queue.put(annotated)
-
-        # Chỉ đẩy metadata cho Scan FSM
-        detection_queue.put({
-            "time": time.time(),
-            "counter": frame_counter
-        })
+        # [QUAN TRỌNG] Kiểm tra hàng đợi trước khi put để tránh Deadlock
+        # Nếu 1 trong 2 hàng đợi đầy, ta drop frame này luôn để tránh lệch pha (desync)
+        if not sender_frame_queue.full() and not detection_queue.full():
+            sender_frame_queue.put(annotated)
+            detection_queue.put({
+                "time": time.time(),
+                "counter": frame_counter
+            })
+        else:
+            # Nếu queue đầy (do mạng chậm hoặc server chưa nhận), bỏ qua frame này
+            # print("[WARNING] Queue full, dropping frame")
+            pass
 
         # --- GIẢI PHÓNG BỘ NHỚ THỦ CÔNG ---
         # Xóa các biến nặng ngay lập tức để tránh OOM trên Pi Zero 2W
@@ -228,7 +232,11 @@ def scan_fsm_worker(detection_queue: Queue, result_queue: Queue):
                     # [QUAN TRỌNG] Phải đẩy kết quả rỗng vào result_queue.
                     # Vì sender_worker đang giữ 1 frame và chờ 1 result tương ứng.
                     # Nếu không trả về, sender sẽ bị treo vĩnh viễn (Deadlock).
-                    result_queue.put({"current": {}, "total": {}})
+                    
+                    # Dùng timeout để không bị treo nếu result_queue đang đầy
+                    try:
+                        result_queue.put({"current": {}, "total": {}}, timeout=0.1)
+                    except queue.Full: pass
                 except queue.Empty: break
             time.sleep(0.1)
             continue
@@ -281,10 +289,13 @@ def scan_fsm_worker(detection_queue: Queue, result_queue: Queue):
                     batch_frame_counters = []
                 # else: Điều kiện sai -> Vẫn giữ ở mục "đang quét" (current_scanning)
 
-        result_queue.put({
-            "current": current_scanning,
-            "total": dict(session_total)
-        })
+        # Put kết quả với timeout để tránh treo luồng FSM
+        try:
+            result_queue.put({
+                "current": current_scanning,
+                "total": dict(session_total)
+            }, timeout=0.1)
+        except queue.Full: pass
 
 # ---------------------
 # THREAD 4: SENDER
