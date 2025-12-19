@@ -6,6 +6,7 @@ import json
 import queue
 from threading import Thread
 from queue import Queue
+from multiprocessing import Process, Value, Queue as MpQueue
 import yaml
 from collections import Counter
 import numpy as np
@@ -65,7 +66,6 @@ MQTT_BROKER= "broker.hivemq.com"
 MQTT_PORT = 1883
 MQTT_TOPIC = "pbl6/products"
 MQTT_TOPIC_CMD = f"cmd/{CONFIG['camera_name']}"
-IS_SCANNING = False
 LCD_DISPLAY_DURATION = 1.5
 
 # ========== Hiển thị trên LCD ==========
@@ -148,14 +148,14 @@ def on_mqtt_connect(client, userdata, flags, rc):
         print(f"[MQTT] Failed to connect, return code {rc}")
 
 def on_mqtt_message(client, userdata, msg):
-    global IS_SCANNING
+    is_scanning = userdata.get('is_scanning')
     if msg.topic == MQTT_TOPIC_CMD:
         payload = msg.payload.decode().strip().upper()
         if payload == "SCAN":
-            IS_SCANNING = True
+            if is_scanning: is_scanning.value = True
             print("[CMD] SCAN STARTED")
         elif payload == "STOP":
-            IS_SCANNING = False
+            if is_scanning: is_scanning.value = False
             print("[CMD] SCAN STOPPED")
         return
 
@@ -193,12 +193,15 @@ def camera_worker(picam2, frame_queue: Queue):
 # ---------------------
 # THREAD 2: INFERENCE
 # ---------------------
-def inference_worker(model: YOLO, frame_queue: Queue, sender_frame_queue: Queue):
-    global IS_SCANNING
+def inference_worker(model_name, config, frame_queue, sender_frame_queue, is_scanning):
+    # Load model inside process
+    model = YOLO(model_name, task="detect")
+
     prev_time = time.time()
     count_gc = 0
-    dummy = np.zeros((CONFIG["camera_resolution"][1],CONFIG["camera_resolution"][0],3),dtype=np.uint8)
-    model.predict(source=dummy,conf=CONFIG["conf_threshold"],iou=CONFIG["nms_threshold"],verbose=False)
+    # Warmup
+    dummy = np.zeros((config["camera_resolution"][1],config["camera_resolution"][0],3),dtype=np.uint8)
+    model.predict(source=dummy,conf=config["conf_threshold"],iou=config["nms_threshold"],verbose=False)
     while True:
         # frame = frame_queue.get()
         try:
@@ -215,11 +218,11 @@ def inference_worker(model: YOLO, frame_queue: Queue, sender_frame_queue: Queue)
         frame_counter = Counter()
         annotated = None
 
-        if IS_SCANNING:
+        if is_scanning.value:
             results = model.predict(
                 source=frame,
-                conf=CONFIG["conf_threshold"],
-                iou=CONFIG["nms_threshold"],
+                conf=config["conf_threshold"],
+                iou=config["nms_threshold"],
                 verbose=False
             )
 
@@ -252,7 +255,7 @@ def inference_worker(model: YOLO, frame_queue: Queue, sender_frame_queue: Queue)
         # --- GIẢI PHÓNG BỘ NHỚ THỦ CÔNG ---
         # Xóa các biến nặng ngay lập tức để tránh OOM trên Pi Zero 2W
         del frame
-        if IS_SCANNING:
+        if is_scanning.value:
             del results
             del result
         # annotated đã được put vào queue, sender sẽ lo, ở đây ta xóa tham chiếu cục bộ
@@ -273,6 +276,9 @@ if __name__ == "__main__":
     print("YOLO NCNN + FSM SCAN PIPELINE")
     print("=" * 50)
 
+    # Shared memory for scanning state
+    shared_is_scanning = Value('b', False)
+
     # Camera
     picam2 = Picamera2()
     config = picam2.create_preview_configuration(
@@ -281,16 +287,13 @@ if __name__ == "__main__":
     picam2.configure(config)
     picam2.start()
 
-    # Model
-    model = YOLO(CONFIG["model_name"], task="detect")
-
     # LCD & MQTT Setup
     lcd_queue = Queue(maxsize=3)
     lcd = init_lcd()
     Thread(target=lcd_worker, args=(lcd_queue, lcd), daemon=True).start()
 
     mqtt_client = mqtt.Client()
-    mqtt_client.user_data_set({'queue': lcd_queue})
+    mqtt_client.user_data_set({'queue': lcd_queue, 'is_scanning': shared_is_scanning})
     mqtt_client.on_connect = on_mqtt_connect
     mqtt_client.on_message = on_mqtt_message
     try:
@@ -300,12 +303,12 @@ if __name__ == "__main__":
         print(f"[ERROR] MQTT Connection: {e}")
 
     # Queues
-    frame_queue = Queue(maxsize=CONFIG["queue_size"])
-    sender_frame_queue = Queue(maxsize=CONFIG["queue_size"])
+    frame_queue = MpQueue(maxsize=CONFIG["queue_size"])
+    sender_frame_queue = MpQueue(maxsize=CONFIG["queue_size"])
 
     # Threads
     Thread(target=camera_worker, args=(picam2, frame_queue), daemon=True).start()
-    Thread(target=inference_worker, args=(model, frame_queue, sender_frame_queue), daemon=True).start()
+    Process(target=inference_worker, args=(CONFIG["model_name"], CONFIG, frame_queue, sender_frame_queue, shared_is_scanning), daemon=True).start()
 
     print("[INFO] System running. Ctrl+C to stop.")
 
