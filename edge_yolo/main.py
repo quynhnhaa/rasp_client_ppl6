@@ -74,7 +74,7 @@ PRICE_MAP = load_price_map(price_map_path)
 
 MQTT_TOPIC_CMD = f"cmd/{CONFIG['camera_name']}"
 
-SYSTEM_ACTIVE = False
+SYSTEM_ACTIVE = True
 SERVER_MSG = "READY"
 
 def on_mqtt_connect(client, userdata, flags, rc):
