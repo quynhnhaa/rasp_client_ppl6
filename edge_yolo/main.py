@@ -147,12 +147,6 @@ def inference_worker(model: YOLO, q_raw: Queue, q_data: Queue):
         except queue.Empty:
             continue
 
-        # Nếu dừng: Hủy frame, ngủ nhẹ và KHÔNG làm gì tiếp theo (không infer, không gửi FSM)
-        if not SYSTEM_ACTIVE:
-            del frame
-            time.sleep(0.01)
-            continue
-
         # Calculate FPS
         curr_time = time.time()
         fps = 1 / (curr_time - prev_time) if (curr_time - prev_time) > 0 else 0
@@ -161,21 +155,26 @@ def inference_worker(model: YOLO, q_raw: Queue, q_data: Queue):
         frame_counter = Counter()
         annotated = frame
 
-        results = model.predict(
-            source=frame,
-            conf=CONFIG["conf_threshold"],
-            iou=CONFIG["nms_threshold"],
-            verbose=False
-        )
-        result = results[0]
+        # Chỉ chạy AI khi SYSTEM_ACTIVE = True
+        if SYSTEM_ACTIVE:
+            results = model.predict(
+                source=frame,
+                conf=CONFIG["conf_threshold"],
+                iou=CONFIG["nms_threshold"],
+                verbose=False
+            )
+            result = results[0]
 
-        if result.boxes is not None and len(result.boxes) > 0:
-            cls_ids = result.boxes.cls.cpu().numpy().astype(int)
-            for cid in cls_ids:
-                frame_counter[result.names[cid]] += 1
-        
-        annotated = result.plot(font_size=0.4, line_width=1)
-        del results, result
+            if result.boxes is not None and len(result.boxes) > 0:
+                cls_ids = result.boxes.cls.cpu().numpy().astype(int)
+                for cid in cls_ids:
+                    frame_counter[result.names[cid]] += 1
+            
+            annotated = result.plot(font_size=0.4, line_width=1)
+            del results, result
+        else:
+            # Nếu dừng, vẽ thông báo chờ
+            cv2.putText(annotated, "WAITING FOR CMD...", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 1)
 
         # Draw FPS
         cv2.putText(annotated, f"FPS: {fps:.1f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
@@ -216,24 +215,6 @@ def scan_fsm_worker(q_data: Queue, q_result: Queue):
     session_total = Counter()  # Mục "đã quét" (tổng các đợt)
     current_scanning = {}    # Mục "đang quét" (đợt hiện tại)
     while True:
-        # Nếu hệ thống dừng, reset trạng thái FSM
-        if not SYSTEM_ACTIVE:
-            # Chỉ reset nếu đang có dữ liệu cũ (để tránh print/reset liên tục mỗi vòng lặp)
-            if state != ScanState.IDLE or session_total:
-                state = ScanState.IDLE
-                last_seen_time = 0
-                batch_frame_counters = []
-                session_total = Counter() 
-                current_scanning = {}
-                print("[FSM] Session Reset (STOPPED)")
-            
-            # Xả hàng đợi nếu có dữ liệu thừa để tránh xử lý lại khi bật lên
-            try:
-                q_data.get_nowait()
-            except queue.Empty:
-                time.sleep(0.1)
-            continue
-
         try:
             data = q_data.get(timeout=0.1)
         except queue.Empty:
@@ -242,6 +223,26 @@ def scan_fsm_worker(q_data: Queue, q_result: Queue):
         frame = data["frame"]
         frame_counter = data["counter"]
         now = data["time"]
+
+        # Nếu hệ thống dừng, reset trạng thái FSM nhưng VẪN GỬI FRAME đi tiếp
+        if not SYSTEM_ACTIVE:
+            if state != ScanState.IDLE or session_total:
+                state = ScanState.IDLE
+                last_seen_time = 0
+                batch_frame_counters = []
+                session_total = Counter() 
+                current_scanning = {}
+                print("[FSM] Session Reset (STOPPED)")
+            
+            # Bỏ qua logic FSM, chuyển thẳng frame xuống Sender
+            try:
+                q_result.put_nowait({
+                    "frame": frame,
+                    "current": {},
+                    "total": {}
+                })
+            except queue.Full: pass
+            continue
 
         if state == ScanState.IDLE:
             if frame_counter:
@@ -312,7 +313,7 @@ def sender_worker(q_result: Queue, server_address: str, camera_name: str):
 def startup_worker():
     global SYSTEM_ACTIVE, SERVER_MSG
     print("[INFO] Startup: Active for 5s to connect server...")
-    time.sleep(5)
+    time.sleep(10)
     if SERVER_MSG != "SCANNING...":
         SYSTEM_ACTIVE = False
         SERVER_MSG = "STOPPED"

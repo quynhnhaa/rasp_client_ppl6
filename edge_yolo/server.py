@@ -5,6 +5,7 @@ import traceback
 import paho.mqtt.client as mqtt
 import threading
 import sys
+import zmq
 
 # Cấu hình MQTT
 MQTT_BROKER = "localhost"  # Địa chỉ IP của Broker (thường là máy chạy server này)
@@ -72,6 +73,8 @@ def main():
 
     # Khởi tạo ImageHub để lắng nghe kết nối từ các client.
     image_hub = imagezmq.ImageHub()
+    # [QUAN TRỌNG] Set timeout 100ms để không bị treo nếu Client ngừng gửi
+    image_hub.zmq_socket.setsockopt(zmq.RCVTIMEO, 100)
 
     print("[INFO] Server đang chạy. Đang chờ kết nối từ client...")
     connected_clients = set()
@@ -85,8 +88,12 @@ def main():
         # Vòng lặp vô tận để nhận và hiển thị các khung hình
         while IS_RUNNING:
             # Nhận tên camera và khung hình từ client
-            # Lệnh này sẽ block cho đến khi có ảnh mới
-            msg, frame = image_hub.recv_image()
+            try:
+                msg, frame = image_hub.recv_image()
+            except zmq.Again:
+                # Không nhận được ảnh (Timeout), tiếp tục vòng lặp để UI không bị treo
+                cv2.waitKey(1)
+                continue
 
             try:
                 data = json.loads(msg)
