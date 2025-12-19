@@ -521,4 +521,4 @@ if __name__ == "__main__":
         print("[INFO] Stopping camera...")
         picam2.stop()
         print("[INFO] Stopped.")
-        sys.exit(0)
+        os._exit(0)
