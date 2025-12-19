@@ -60,7 +60,7 @@ CONFIG = {
     "server_ip": os.getenv("server_ip", "127.0.0.1"),
     "server_port": 5555,
     "camera_name": "raspi_cam",
-    "queue_size": 2, # Tăng buffer lên 3 để tránh blocking dây chuyền
+    "queue_size": 1, # Tăng buffer lên 3 để tránh blocking dây chuyền
     "conf_threshold": 0.45,
     "nms_threshold": 0.45,
 }
