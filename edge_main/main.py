@@ -8,7 +8,7 @@ from threading import Thread
 from queue import Queue
 import yaml
 from collections import Counter
-
+import numpy as np
 import paho.mqtt.client as mqtt
 try:
     from RPLCD.i2c import CharLCD
@@ -64,6 +64,8 @@ del metadata_path
 MQTT_BROKER= "broker.hivemq.com"
 MQTT_PORT = 1883
 MQTT_TOPIC = "pbl6/products"
+MQTT_TOPIC_CMD = f"cmd/{CONFIG['camera_name']}"
+IS_SCANNING = True
 LCD_DISPLAY_DURATION = 3
 
 # ========== Hiển thị trên LCD ==========
@@ -183,12 +185,23 @@ def init_lcd():
 
 def on_mqtt_connect(client, userdata, flags, rc):
     if rc == 0:
-        print(f"[MQTT] Connected. Subscribing to {MQTT_TOPIC}")
-        client.subscribe(MQTT_TOPIC)
+        print(f"[MQTT] Connected. Subscribing to {MQTT_TOPIC} and {MQTT_TOPIC_CMD}")
+        client.subscribe([(MQTT_TOPIC, 0), (MQTT_TOPIC_CMD, 0)])
     else:
         print(f"[MQTT] Failed to connect, return code {rc}")
 
 def on_mqtt_message(client, userdata, msg):
+    global IS_SCANNING
+    if msg.topic == MQTT_TOPIC_CMD:
+        payload = msg.payload.decode().strip().upper()
+        if payload == "SCAN":
+            IS_SCANNING = True
+            print("[CMD] SCAN STARTED")
+        elif payload == "STOP":
+            IS_SCANNING = False
+            print("[CMD] SCAN STOPPED")
+        return
+
     q = userdata.get('queue')
     try:
         data = json.loads(msg.payload.decode())
@@ -216,8 +229,11 @@ def camera_worker(picam2, frame_queue: Queue):
 # THREAD 2: INFERENCE
 # ---------------------
 def inference_worker(model: YOLO, frame_queue: Queue, sender_frame_queue: Queue):
+    global IS_SCANNING
     prev_time = time.time()
     count_gc = 0
+    dummy = np.zeros((CONFIG["camera_resolution"][1],CONFIG["camera_resolution"][0],3),dtype=np.uint8)
+    model.predict(source=dummy,conf=CONFIG["conf_threshold"],iou=CONFIG["nms_threshold"],verbose=False)
     while True:
         # frame = frame_queue.get()
         try:
@@ -231,22 +247,28 @@ def inference_worker(model: YOLO, frame_queue: Queue, sender_frame_queue: Queue)
         fps = 1 / (curr_time - prev_time) if (curr_time - prev_time) > 0 else 0
         prev_time = curr_time
 
-        results = model.predict(
-            source=frame,
-            conf=CONFIG["conf_threshold"],
-            iou=CONFIG["nms_threshold"],
-            verbose=False
-        )
-
-        result = results[0]
         frame_counter = Counter()
+        annotated = None
 
-        if result.boxes is not None and len(result.boxes) > 0:
-            cls_ids = result.boxes.cls.cpu().numpy().astype(int)
-            for cid in cls_ids:
-                frame_counter[result.names[cid]] += 1
+        if IS_SCANNING:
+            results = model.predict(
+                source=frame,
+                conf=CONFIG["conf_threshold"],
+                iou=CONFIG["nms_threshold"],
+                verbose=False
+            )
 
-        annotated = result.plot(font_size=0.4, line_width=1)
+            result = results[0]
+
+            if result.boxes is not None and len(result.boxes) > 0:
+                cls_ids = result.boxes.cls.cpu().numpy().astype(int)
+                for cid in cls_ids:
+                    frame_counter[result.names[cid]] += 1
+
+            annotated = result.plot(font_size=0.4, line_width=1)
+        else:
+            annotated = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            cv2.putText(annotated, "STOPPED", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
         # Draw FPS
         cv2.putText(annotated, f"FPS: {fps:.1f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
@@ -265,8 +287,9 @@ def inference_worker(model: YOLO, frame_queue: Queue, sender_frame_queue: Queue)
         # --- GIẢI PHÓNG BỘ NHỚ THỦ CÔNG ---
         # Xóa các biến nặng ngay lập tức để tránh OOM trên Pi Zero 2W
         del frame
-        del results
-        del result
+        if IS_SCANNING:
+            del results
+            del result
         # annotated đã được put vào queue, sender sẽ lo, ở đây ta xóa tham chiếu cục bộ
         del annotated
         del frame_counter
