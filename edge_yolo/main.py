@@ -126,30 +126,31 @@ EMPTY_TIMEOUT = 1.2  # giây
 # ---------------------
 # THREAD 1: CAMERA
 # ---------------------
-def camera_worker(picam2, frame_queue: Queue):
+def camera_worker(picam2, q_raw: Queue):
     while True:
         frame = picam2.capture_array()
         try:
-            frame_queue.put(frame, timeout=0.1)
+            q_raw.put_nowait(frame)
         except queue.Full:
             pass
 
 # ---------------------
 # THREAD 2: INFERENCE
 # ---------------------
-def inference_worker(model: YOLO, frame_queue: Queue, detection_queue: Queue, sender_frame_queue: Queue):
+def inference_worker(model: YOLO, q_raw: Queue, q_data: Queue):
     global SYSTEM_ACTIVE, SERVER_MSG
     prev_time = time.time()
     count_gc = 0
     while True:
-        # Luôn lấy frame ra khỏi queue để tránh camera bị block (queue full)
-        frame = frame_queue.get()
+        try:
+            frame = q_raw.get(timeout=0.1)
+        except queue.Empty:
+            continue
 
-        # Nếu chưa có lệnh SCAN, hủy frame và tiếp tục vòng lặp (không infer, không gửi)
+        # Nếu dừng: Hủy frame, ngủ nhẹ và KHÔNG làm gì tiếp theo (không infer, không gửi FSM)
         if not SYSTEM_ACTIVE:
             del frame
-            # Ngủ nhẹ để giảm tải CPU khi idle
-            time.sleep(0.1)
+            time.sleep(0.01)
             continue
 
         # Calculate FPS
@@ -157,44 +158,45 @@ def inference_worker(model: YOLO, frame_queue: Queue, detection_queue: Queue, se
         fps = 1 / (curr_time - prev_time) if (curr_time - prev_time) > 0 else 0
         prev_time = curr_time
 
+        frame_counter = Counter()
+        annotated = frame
+
         results = model.predict(
             source=frame,
             conf=CONFIG["conf_threshold"],
             iou=CONFIG["nms_threshold"],
             verbose=False
         )
-
         result = results[0]
-        frame_counter = Counter()
 
         if result.boxes is not None and len(result.boxes) > 0:
             cls_ids = result.boxes.cls.cpu().numpy().astype(int)
             for cid in cls_ids:
                 frame_counter[result.names[cid]] += 1
-
+        
         annotated = result.plot(font_size=0.4, line_width=1)
+        del results, result
 
         # Draw FPS
         cv2.putText(annotated, f"FPS: {fps:.1f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
+        # Draw Server Message
+        cv2.putText(annotated, SERVER_MSG, (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
 
-        # [QUAN TRỌNG] Kiểm tra hàng đợi trước khi put để tránh Deadlock
-        # Nếu 1 trong 2 hàng đợi đầy, ta drop frame này luôn để tránh lệch pha (desync)
-        if not sender_frame_queue.full() and not detection_queue.full():
-            sender_frame_queue.put(annotated)
-            detection_queue.put({
-                "time": time.time(),
-                "counter": frame_counter
-            })
-        else:
-            # Nếu queue đầy (do mạng chậm hoặc server chưa nhận), bỏ qua frame này
-            # print("[WARNING] Queue full, dropping frame")
+        # Đóng gói dữ liệu để chuyển sang FSM
+        packet = {
+            "frame": annotated,
+            "counter": frame_counter,
+            "time": time.time()
+        }
+
+        try:
+            q_data.put_nowait(packet)
+        except queue.Full:
             pass
 
         # --- GIẢI PHÓNG BỘ NHỚ THỦ CÔNG ---
         # Xóa các biến nặng ngay lập tức để tránh OOM trên Pi Zero 2W
         del frame
-        del results
-        del result
         # annotated đã được put vào queue, sender sẽ lo, ở đây ta xóa tham chiếu cục bộ
         del annotated
         
@@ -207,7 +209,7 @@ def inference_worker(model: YOLO, frame_queue: Queue, detection_queue: Queue, se
 # ---------------------
 # THREAD 3: SCAN FSM
 # ---------------------
-def scan_fsm_worker(detection_queue: Queue, result_queue: Queue):
+def scan_fsm_worker(q_data: Queue, q_result: Queue):
     state = ScanState.IDLE
     last_seen_time = 0
     batch_frame_counters = []
@@ -225,30 +227,21 @@ def scan_fsm_worker(detection_queue: Queue, result_queue: Queue):
                 current_scanning = {}
                 print("[FSM] Session Reset (STOPPED)")
             
-            # Xả sạch hàng đợi cũ (nếu có) và ngủ để tiết kiệm CPU
-            while not detection_queue.empty():
-                try: 
-                    detection_queue.get_nowait()
-                    # [QUAN TRỌNG] Phải đẩy kết quả rỗng vào result_queue.
-                    # Vì sender_worker đang giữ 1 frame và chờ 1 result tương ứng.
-                    # Nếu không trả về, sender sẽ bị treo vĩnh viễn (Deadlock).
-                    
-                    # Dùng timeout để không bị treo nếu result_queue đang đầy
-                    try:
-                        result_queue.put({"current": {}, "total": {}}, timeout=0.1)
-                    except queue.Full: pass
-                except queue.Empty: break
-            time.sleep(0.1)
+            # Xả hàng đợi nếu có dữ liệu thừa để tránh xử lý lại khi bật lên
+            try:
+                q_data.get_nowait()
+            except queue.Empty:
+                time.sleep(0.1)
             continue
 
         try:
-            # Dùng timeout để vòng lặp không bị treo nếu không có dữ liệu
-            data = detection_queue.get(timeout=0.1)
+            data = q_data.get(timeout=0.1)
         except queue.Empty:
             continue
 
+        frame = data["frame"]
         frame_counter = data["counter"]
-        now = data["time"]  
+        now = data["time"]
 
         if state == ScanState.IDLE:
             if frame_counter:
@@ -291,23 +284,23 @@ def scan_fsm_worker(detection_queue: Queue, result_queue: Queue):
 
         # Put kết quả với timeout để tránh treo luồng FSM
         try:
-            result_queue.put({
+            q_result.put_nowait({
+                "frame": frame,
                 "current": current_scanning,
                 "total": dict(session_total)
-            }, timeout=0.1)
+            })
         except queue.Full: pass
 
 # ---------------------
 # THREAD 4: SENDER
 # ---------------------
-def sender_worker(result_queue: Queue, sender_frame_queue: Queue, server_address: str, camera_name: str):
+def sender_worker(q_result: Queue, server_address: str, camera_name: str):
     sender = imagezmq.ImageSender(connect_to=server_address)
     print(f"[INFO] Connected to server {server_address}")
 
     while True:
-        # Lấy frame và dữ liệu từ 2 nguồn khác nhau (tự động đồng bộ vì quy trình 1-1)
-        frame = sender_frame_queue.get()
-        data = result_queue.get()
+        data = q_result.get()
+        frame = data["frame"]
         
         msg = {
             "camera_name": camera_name,
@@ -345,10 +338,9 @@ if __name__ == "__main__":
     model = YOLO(CONFIG["model_name"], task="detect")
 
     # Queues
-    frame_queue = Queue(maxsize=CONFIG["queue_size"])
-    detection_queue = Queue(maxsize=CONFIG["queue_size"])
-    result_queue = Queue(maxsize=CONFIG["queue_size"])
-    sender_frame_queue = Queue(maxsize=CONFIG["queue_size"])
+    q_raw = Queue(maxsize=CONFIG["queue_size"])    # Camera -> Inference
+    q_data = Queue(maxsize=CONFIG["queue_size"])   # Inference -> FSM
+    q_result = Queue(maxsize=CONFIG["queue_size"]) # FSM -> Sender
 
     # MQTT Client Start
     if 'mqtt' in globals():
@@ -364,10 +356,10 @@ if __name__ == "__main__":
             print(f"[HINT] Kiểm tra Mosquitto trên Server đã có 'listener 1883' và 'allow_anonymous true' chưa?")
 
     # Threads
-    Thread(target=camera_worker, args=(picam2, frame_queue), daemon=True).start()
-    Thread(target=inference_worker, args=(model, frame_queue, detection_queue, sender_frame_queue), daemon=True).start()
-    Thread(target=scan_fsm_worker, args=(detection_queue, result_queue), daemon=True).start()
-    Thread(target=sender_worker, args=(result_queue, sender_frame_queue, CONFIG["server_address"], CONFIG["camera_name"]), daemon=True).start()
+    Thread(target=camera_worker, args=(picam2, q_raw), daemon=True).start()
+    Thread(target=inference_worker, args=(model, q_raw, q_data), daemon=True).start()
+    Thread(target=scan_fsm_worker, args=(q_data, q_result), daemon=True).start()
+    Thread(target=sender_worker, args=(q_result, CONFIG["server_address"], CONFIG["camera_name"]), daemon=True).start()
     Thread(target=startup_worker, daemon=True).start()
 
     print("[INFO] System running. Ctrl+C to stop.")
