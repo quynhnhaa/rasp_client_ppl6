@@ -168,27 +168,69 @@ def on_mqtt_message(client, userdata, msg):
                 lcd_queue.put_nowait((label, price, quantity))
     except Exception as e:
         print(f"[ERROR] MQTT Message: {e}")
+# ---------------------
+# SOLUTION 1: ImageZMQ PUB-SUB (không block)
+# ---------------------
+def create_sender(server_address):
+    """Tạo ImageZMQ sender với PUB-SUB pattern"""
+    sender = imagezmq.ImageSender(connect_to=server_address, REQ_REP=False)
+    return sender
 
 # ---------------------
-# THREAD: CAMERA (vẫn dùng Thread vì Picamera2 không pickle được)
+# SOLUTION 2: Non-blocking Queue với drop policy
+# ---------------------
+def safe_queue_put(q, item, max_retries=2):
+    """Put item vào queue, drop old item nếu full"""
+    for _ in range(max_retries):
+        try:
+            q.put_nowait(item)
+            return True
+        except:
+            # Queue full → drop oldest
+            try:
+                old = q.get_nowait()
+                del old
+            except:
+                pass
+    return False
+
+def safe_queue_get(q, timeout=0.1):
+    """Get item từ queue với timeout"""
+    try:
+        return q.get(timeout=timeout), True
+    except:
+        return None, False
+
+# ---------------------
+# CAMERA WORKER (đã sửa)
 # ---------------------
 def camera_worker(picam2, frame_queue: MPQueue, stop_event: Event):
     print("[CAMERA] Worker started.")
+    frame_count = 0
+    
     while not stop_event.is_set():
         try:
             frame = picam2.capture_array()
-            try:
-                frame_queue.put(frame, timeout=0.05)
-            except:
-                pass  # Queue full, drop frame
+            
+            # Non-blocking put với drop policy
+            if not safe_queue_put(frame_queue, frame):
+                pass  # Drop frame nếu không put được
+            
             del frame
+            frame_count += 1
+            
+            # GC định kỳ
+            if frame_count % 50 == 0:
+                gc.collect()
+                
         except Exception as e:
             print(f"[ERROR] Camera: {e}")
             time.sleep(0.1)
+            
     print("[CAMERA] Worker stopped.")
 
 # ---------------------
-# PROCESS: INFERENCE (dùng Process để bypass GIL)
+# INFERENCE PROCESS (đã sửa)
 # ---------------------
 def inference_process(
     model_name: str,
@@ -198,57 +240,53 @@ def inference_process(
     scanning_event: Event,
     stop_event: Event
 ):
-    """
-    Chạy trong process riêng biệt.
-    Load model trong process này để tránh vấn đề pickle.
-    """
-    # Import YOLO trong process con
     from ultralytics import YOLO
-    import cv2
-    import numpy as np
     from collections import Counter
-
-    print("[INFERENCE] Process started. Loading model...")
-
+    
+    print("[INFERENCE] Process started.")
+    
     # Load model
     model = YOLO(model_name, task="detect")
-
+    
     # Warmup
     dummy = np.zeros(
         (model_config["resolution"][1], model_config["resolution"][0], 3),
         dtype=np.uint8
     )
-    model.predict(
-        source=dummy,
-        conf=model_config["conf_threshold"],
-        iou=model_config["nms_threshold"],
-        verbose=False
-    )
+    model.predict(source=dummy, verbose=False)
     del dummy
     gc.collect()
-    print("[INFERENCE] Model warmup complete.")
-
+    print("[INFERENCE] Warmup complete.")
+    
     prev_time = time.time()
     gc_counter = 0
-
+    dropped_frames = 0
+    
     while not stop_event.is_set():
-        # ===== 1. Lấy frame từ queue =====
-        try:
-            frame = frame_queue.get(timeout=0.5)
-        except:
+        # ===== Get frame (non-blocking) =====
+        frame, ok = safe_queue_get(frame_queue, timeout=0.5)
+        if not ok:
             continue
-
-        # ===== 2. Tính FPS =====
+        
+        # ===== Drain queue - chỉ giữ frame mới nhất =====
+        while True:
+            try:
+                newer_frame = frame_queue.get_nowait()
+                del frame  # Xóa frame cũ
+                frame = newer_frame
+                dropped_frames += 1
+            except:
+                break
+        
+        # ===== FPS =====
         curr_time = time.time()
-        fps = 1.0 / (curr_time - prev_time) if (curr_time - prev_time) > 0 else 0.0
+        fps = 1.0 / (curr_time - prev_time) if (curr_time - prev_time) > 0 else 0
         prev_time = curr_time
-
-        # ===== 3. Khởi tạo biến =====
+        
+        # ===== Inference =====
         frame_counter = Counter()
-        annotated = None
         is_scanning = scanning_event.is_set()
-
-        # ===== 4. Inference hoặc hiển thị STOPPED =====
+        
         try:
             if is_scanning:
                 results = model.predict(
@@ -258,129 +296,85 @@ def inference_process(
                     verbose=False
                 )
                 result = results[0]
-
+                
                 if result.boxes is not None and len(result.boxes) > 0:
                     cls_ids = result.boxes.cls.cpu().numpy().astype(int)
                     for cid in cls_ids:
                         frame_counter[result.names[cid]] += 1
                     del cls_ids
-
+                
                 annotated = result.plot(font_size=0.4, line_width=1)
-                del result
-                del results
+                del result, results
             else:
                 annotated = frame.copy()
-                cv2.putText(
-                    annotated, "STOPPED",
-                    (10, 60), cv2.FONT_HERSHEY_SIMPLEX,
-                    0.6, (0, 0, 255), 2
-                )
+                cv2.putText(annotated, "STOPPED", (10, 60),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
         except Exception as e:
             print(f"[ERROR] Inference: {e}")
-            annotated = frame.copy() if frame is not None else None
-            frame_counter = Counter()
-
-        # ===== 5. Xóa frame gốc =====
+            annotated = frame.copy()
+        
         del frame
-
-        # ===== 6. Vẽ FPS =====
-        if annotated is not None:
-            cv2.putText(
-                annotated, f"FPS: {fps:.1f}",
-                (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
-                0.4, (0, 255, 0), 1
-            )
-
-        # ===== 7. Put vào result queue =====
-        if annotated is not None:
-            # Chuyển Counter thành dict để serialize qua multiprocessing Queue
-            result_data = (annotated, dict(frame_counter), curr_time)
-            try:
-                result_queue.put(result_data, timeout=0.05)
-            except:
-                # Queue full → drop old, put new
-                try:
-                    old = result_queue.get_nowait()
-                    del old
-                except:
-                    pass
-                try:
-                    result_queue.put_nowait(result_data)
-                except:
-                    pass
-
-        # ===== 8. Cleanup =====
-        del annotated
-        del frame_counter
-
-        # ===== 9. GC định kỳ =====
+        
+        # ===== Draw FPS =====
+        cv2.putText(annotated, f"FPS: {fps:.1f}", (10, 30),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
+        
+        # ===== Put result (non-blocking) =====
+        result_data = (annotated, dict(frame_counter), curr_time)
+        safe_queue_put(result_queue, result_data)
+        
+        # ===== Cleanup =====
+        del annotated, frame_counter
+        
         gc_counter += 1
         if gc_counter >= 30:
             gc.collect()
             gc_counter = 0
-
+            if dropped_frames > 0:
+                print(f"[INFERENCE] Dropped {dropped_frames} frames")
+                dropped_frames = 0
+    
     print("[INFERENCE] Process stopped.")
 
 # ---------------------
-# MAIN
+# MAIN (đã sửa)
 # ---------------------
 if __name__ == "__main__":
     print("=" * 50)
-    print("YOLO NCNN + MULTIPROCESSING PIPELINE")
+    print("YOLO NCNN + MULTIPROCESSING (FIXED)")
     print("=" * 50)
-
-    # ===== Events cho đồng bộ =====
-    scanning_event = Event()  # Thay thế IS_SCANNING global
-    stop_event = Event()      # Signal để dừng các worker
-
-    # ===== Camera =====
+    
+    # Events
+    scanning_event = Event()
+    stop_event = Event()
+    
+    # Camera
     picam2 = Picamera2()
     cam_config = picam2.create_preview_configuration(
         main={"size": CONFIG["camera_resolution"], "format": "RGB888"}
     )
     picam2.configure(cam_config)
     picam2.start()
-    print("[INFO] Camera started.")
-
-    # ===== LCD =====
-    lcd_queue = queue.Queue(maxsize=3)  # Thread-safe queue cho LCD
-    lcd = init_lcd()
-    Thread(target=lcd_worker, args=(lcd_queue, lcd), daemon=True).start()
-
-    # ===== MQTT =====
-    mqtt_client = mqtt.Client()
-    mqtt_client.user_data_set({
-        'lcd_queue': lcd_queue,
-        'scanning_event': scanning_event
-    })
-    mqtt_client.on_connect = on_mqtt_connect
-    mqtt_client.on_message = on_mqtt_message
-    try:
-        mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
-        mqtt_client.loop_start()
-    except Exception as e:
-        print(f"[ERROR] MQTT Connection: {e}")
-
-    # ===== Multiprocessing Queues =====
-    frame_queue = MPQueue(maxsize=CONFIG["queue_size"])
-    result_queue = MPQueue(maxsize=CONFIG["queue_size"])
-
-    # ===== Config cho inference process =====
+    
+    # Queues - tăng size một chút
+    frame_queue = MPQueue(maxsize=3)
+    result_queue = MPQueue(maxsize=3)
+    
+    # Config
     model_config = {
         "resolution": CONFIG["camera_resolution"],
         "conf_threshold": CONFIG["conf_threshold"],
         "nms_threshold": CONFIG["nms_threshold"],
     }
-
-    # ===== Start Camera Thread =====
+    
+    # Start workers
     camera_thread = Thread(
         target=camera_worker,
         args=(picam2, frame_queue, stop_event),
         daemon=True
     )
     camera_thread.start()
-
-    # ===== Start Inference Process =====
+    
     inference_proc = Process(
         target=inference_process,
         args=(
@@ -393,65 +387,71 @@ if __name__ == "__main__":
         )
     )
     inference_proc.start()
-    print(f"[INFO] Inference process started (PID: {inference_proc.pid})")
-
-    # ===== ImageZMQ Sender (Main Thread) =====
-    sender = imagezmq.ImageSender(connect_to=server_address, REQ_REP=False)
-    print(f"[INFO] Connected to server {CONFIG['server_address']}")
-
+    
+    # ===== QUAN TRỌNG: Dùng PUB-SUB thay vì REQ-REP =====
+    sender = imagezmq.ImageSender(
+        connect_to=CONFIG["server_address"],
+        REQ_REP=False  # ← THAY ĐỔI QUAN TRỌNG!
+    )
+    print(f"[INFO] Connected to server (PUB-SUB mode)")
+    
+    # Main loop với timeout
     print("[INFO] System running. Ctrl+C to stop.")
-
+    
+    last_frame_time = time.time()
+    watchdog_timeout = 5.0  # 5 giây không có frame → cảnh báo
+    
     try:
         while True:
-            try:
-                frame, counter, timestamp = result_queue.get(timeout=1.0)
+            # Get result với timeout
+            data, ok = safe_queue_get(result_queue, timeout=1.0)
+            
+            if ok:
+                frame, counter, timestamp = data
+                last_frame_time = time.time()
+                
                 msg = {
                     "camera_name": CONFIG["camera_name"],
-                    "counter": counter,  # Đã là dict
+                    "counter": counter,
                     "time": timestamp
                 }
-                sender.send_image(json.dumps(msg), frame)
-                del frame
-                del counter
-                del timestamp
-            except:
-                continue
-
+                
+                # Send (non-blocking với PUB-SUB)
+                try:
+                    sender.send_image(json.dumps(msg), frame)
+                except Exception as e:
+                    print(f"[ERROR] Send: {e}")
+                
+                del frame, counter, timestamp, data
+            else:
+                # Watchdog: kiểm tra timeout
+                if time.time() - last_frame_time > watchdog_timeout:
+                    print(f"[WARNING] No frame for {watchdog_timeout}s!")
+                    last_frame_time = time.time()
+                    
+                    # Kiểm tra inference process còn sống không
+                    if not inference_proc.is_alive():
+                        print("[ERROR] Inference process died! Restarting...")
+                        inference_proc = Process(
+                            target=inference_process,
+                            args=(
+                                CONFIG["model_name"],
+                                model_config,
+                                frame_queue,
+                                result_queue,
+                                scanning_event,
+                                stop_event
+                            )
+                        )
+                        inference_proc.start()
+    
     except KeyboardInterrupt:
         print("\n[INFO] Shutting down...")
-
+    
     finally:
-        # ===== Cleanup =====
         stop_event.set()
-
-        # Đợi inference process kết thúc
         inference_proc.join(timeout=3)
         if inference_proc.is_alive():
-            print("[WARNING] Force terminating inference process...")
             inference_proc.terminate()
-
-        # Dừng MQTT
-        mqtt_client.loop_stop()
-        mqtt_client.disconnect()
-
-        # Dừng LCD
-        if lcd:
-            lcd_queue.put((None, None, None))
-            lcd.close(clear=True)
-
-        # Dừng camera
         picam2.stop()
-
-        # Dọn queues
-        while not frame_queue.empty():
-            try:
-                frame_queue.get_nowait()
-            except:
-                break
-        while not result_queue.empty():
-            try:
-                result_queue.get_nowait()
-            except:
-                break
-
         print("[INFO] Stopped.")
