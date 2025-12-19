@@ -250,7 +250,10 @@ def inference_worker(model_name, config, frame_queue, sender_frame_queue, is_sca
                 sender_frame_queue.get_nowait()
             except queue.Empty:
                 pass
-            sender_frame_queue.put_nowait((annotated, frame_counter, curr_time))
+            try:
+                sender_frame_queue.put_nowait((annotated, frame_counter, curr_time))
+            except queue.Full:
+                pass
 
         # --- GIẢI PHÓNG BỘ NHỚ THỦ CÔNG ---
         # Xóa các biến nặng ngay lập tức để tránh OOM trên Pi Zero 2W
