@@ -9,12 +9,7 @@ from queue import Queue
 import yaml
 from collections import Counter
 from enum import Enum
-
-# MQTT Library
-try:
-    import paho.mqtt.client as mqtt
-except ImportError:
-    print("[WARNING] paho-mqtt not installed. Run: pip install paho-mqtt")
+import paho.mqtt.client as mqtt
 
 # ---------------------
 # ENV
@@ -78,43 +73,6 @@ price_map_path = os.path.join(project_dir, "product_price.csv")
 PRICE_MAP = load_price_map(price_map_path)
 
 # ---------------------
-# MQTT CONFIG & STATE
-# ---------------------
-MQTT_BROKER = CONFIG["server_ip"]
-MQTT_PORT = 1883
-
-# Tạo topic riêng cho từng Pi dựa trên camera_name
-MQTT_TOPIC_CMD = f"cmd/{CONFIG['camera_name']}"   # Server gửi lệnh SCAN/STOP vào đây
-
-SYSTEM_ACTIVE = True      # Mặc định là True để kết nối server lúc đầu
-SERVER_MSG = "READY"      # Thông điệp hiển thị
-
-def on_mqtt_connect(client, userdata, flags, rc):
-    if rc == 0:
-        print(f"[MQTT] Connected. Subscribing to: {MQTT_TOPIC_CMD}")
-        client.subscribe(MQTT_TOPIC_CMD)
-    else:
-        print(f"[MQTT] Connection failed: {rc}")
-
-def on_mqtt_message(client, userdata, msg):
-    global SYSTEM_ACTIVE, SERVER_MSG
-    payload = msg.payload.decode('utf-8').strip()
-    
-    if msg.topic == MQTT_TOPIC_CMD:
-        if payload.upper() == "SCAN":
-            SYSTEM_ACTIVE = True
-            SERVER_MSG = "SCANNING..."
-            print(f"[CMD] START SCANNING on {CONFIG['camera_name']}")
-        elif payload.upper() == "STOP":
-            SYSTEM_ACTIVE = False
-            SERVER_MSG = "STOPPED"
-            print(f"[CMD] STOPPED on {CONFIG['camera_name']}")
-        elif payload.upper().startswith("TONGTIEN:"):
-            money_str = payload.split(":", 1)[1].strip()
-            SERVER_MSG = f"TOTAL: {money_str} VND"
-            print(SERVER_MSG)
-
-# ---------------------
 # FSM
 # ---------------------
 class ScanState(Enum):
@@ -126,76 +84,82 @@ EMPTY_TIMEOUT = 1.2  # giây
 # ---------------------
 # THREAD 1: CAMERA
 # ---------------------
-def camera_worker(picam2, q_raw: Queue):
+def camera_worker(picam2, frame_queue: Queue):
     while True:
         frame = picam2.capture_array()
         try:
-            q_raw.put_nowait(frame)
+            frame_queue.put(frame, timeout=0.1)
         except queue.Full:
             pass
 
 # ---------------------
-# THREAD 2: INFERENCE
+# THREAD 2: INFERENCE ONLY
 # ---------------------
-def inference_worker(model: YOLO, q_raw: Queue, q_data: Queue):
-    global SYSTEM_ACTIVE, SERVER_MSG
+def inference_worker(model: YOLO, frame_queue: Queue, detection_queue: Queue, sender_frame_queue: Queue):
     prev_time = time.time()
     count_gc = 0
     while True:
-        try:
-            frame = q_raw.get(timeout=0.1)
-        except queue.Empty:
-            continue
+        frame = frame_queue.get()
 
         # Calculate FPS
         curr_time = time.time()
         fps = 1 / (curr_time - prev_time) if (curr_time - prev_time) > 0 else 0
         prev_time = curr_time
 
+        results = model.predict(
+            source=frame,
+            conf=CONFIG["conf_threshold"],
+            iou=CONFIG["nms_threshold"],
+            verbose=False
+        )
+
+        result = results[0]
         frame_counter = Counter()
-        annotated = frame
 
-        # Chỉ chạy AI khi SYSTEM_ACTIVE = True
-        if SYSTEM_ACTIVE:
-            results = model.predict(
-                source=frame,
-                conf=CONFIG["conf_threshold"],
-                iou=CONFIG["nms_threshold"],
-                verbose=False
-            )
-            result = results[0]
+        if result.boxes is not None and len(result.boxes) > 0:
+            cls_ids = result.boxes.cls.cpu().numpy().astype(int)
+            for cid in cls_ids:
+                frame_counter[result.names[cid]] += 1
 
-            if result.boxes is not None and len(result.boxes) > 0:
-                cls_ids = result.boxes.cls.cpu().numpy().astype(int)
-                for cid in cls_ids:
-                    frame_counter[result.names[cid]] += 1
-            
-            annotated = result.plot(font_size=0.4, line_width=1)
-            del results, result
-        else:
-            # Nếu dừng, vẽ thông báo chờ
-            cv2.putText(annotated, "WAITING FOR CMD...", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 1)
+        annotated = result.plot(font_size=0.4, line_width=1)
 
         # Draw FPS
         cv2.putText(annotated, f"FPS: {fps:.1f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
-        # Draw Server Message
-        cv2.putText(annotated, SERVER_MSG, (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
 
-        # Đóng gói dữ liệu để chuyển sang FSM
-        packet = {
-            "frame": annotated,
-            "counter": frame_counter,
-            "time": time.time()
-        }
-
+        # Đẩy frame trực tiếp cho Sender
+        # SỬA: Dùng put_nowait + try-except để không block
         try:
-            q_data.put_nowait(packet)
+            sender_frame_queue.put_nowait(annotated)
         except queue.Full:
-            pass
+            # Drop frame cũ, put frame mới
+            try:
+                sender_frame_queue.get_nowait()
+            except queue.Empty:
+                pass
+            sender_frame_queue.put_nowait(annotated)
+
+
+        # Chỉ đẩy metadata cho Scan FSM
+        try:
+            detection_queue.put_nowait({
+                "time": time.time(),
+                "counter": frame_counter
+            })
+        except queue.Full:
+            try:
+                detection_queue.get_nowait()
+            except queue.Empty:
+                pass
+            detection_queue.put_nowait({
+                "time": time.time(),
+                "counter": frame_counter
+            })
 
         # --- GIẢI PHÓNG BỘ NHỚ THỦ CÔNG ---
         # Xóa các biến nặng ngay lập tức để tránh OOM trên Pi Zero 2W
         del frame
+        del results
+        del result
         # annotated đã được put vào queue, sender sẽ lo, ở đây ta xóa tham chiếu cục bộ
         del annotated
         
@@ -208,41 +172,16 @@ def inference_worker(model: YOLO, q_raw: Queue, q_data: Queue):
 # ---------------------
 # THREAD 3: SCAN FSM
 # ---------------------
-def scan_fsm_worker(q_data: Queue, q_result: Queue):
+def scan_fsm_worker(detection_queue: Queue, mqtt_client: mqtt.Client, camera_name: str):
     state = ScanState.IDLE
     last_seen_time = 0
     batch_frame_counters = []
     session_total = Counter()  # Mục "đã quét" (tổng các đợt)
     current_scanning = {}    # Mục "đang quét" (đợt hiện tại)
     while True:
-        try:
-            data = q_data.get(timeout=0.1)
-        except queue.Empty:
-            continue
-
-        frame = data["frame"]
+        data = detection_queue.get()
         frame_counter = data["counter"]
-        now = data["time"]
-
-        # Nếu hệ thống dừng, reset trạng thái FSM nhưng VẪN GỬI FRAME đi tiếp
-        if not SYSTEM_ACTIVE:
-            if state != ScanState.IDLE or session_total:
-                state = ScanState.IDLE
-                last_seen_time = 0
-                batch_frame_counters = []
-                session_total = Counter() 
-                current_scanning = {}
-                print("[FSM] Session Reset (STOPPED)")
-            
-            # Bỏ qua logic FSM, chuyển thẳng frame xuống Sender
-            try:
-                q_result.put_nowait({
-                    "frame": frame,
-                    "current": {},
-                    "total": {}
-                })
-            except queue.Full: pass
-            continue
+        now = data["time"]  
 
         if state == ScanState.IDLE:
             if frame_counter:
@@ -283,41 +222,25 @@ def scan_fsm_worker(q_data: Queue, q_result: Queue):
                     batch_frame_counters = []
                 # else: Điều kiện sai -> Vẫn giữ ở mục "đang quét" (current_scanning)
 
-        # Put kết quả với timeout để tránh treo luồng FSM
-        try:
-            q_result.put_nowait({
-                "frame": frame,
-                "current": current_scanning,
-                "total": dict(session_total)
-            })
-        except queue.Full: pass
+        # [REAL-TIME] Gửi dữ liệu qua MQTT liên tục mỗi frame (đồng bộ với video)
+        total_money = sum(PRICE_MAP.get(k, 0) * v for k, v in session_total.items())
+        payload = json.dumps({
+            "current": current_scanning,
+            "total": dict(session_total)
+        })
+        mqtt_client.publish(f"scan/{camera_name}", payload)
 
 # ---------------------
 # THREAD 4: SENDER
 # ---------------------
-def sender_worker(q_result: Queue, server_address: str, camera_name: str):
+def sender_worker(sender_frame_queue: Queue, server_address: str, camera_name: str):
     sender = imagezmq.ImageSender(connect_to=server_address)
     print(f"[INFO] Connected to server {server_address}")
 
     while True:
-        data = q_result.get()
-        frame = data["frame"]
-        
-        msg = {
-            "camera_name": camera_name,
-            "current": data["current"],
-            "total": data["total"]
-        }
-        sender.send_image(json.dumps(msg), frame)
-
-def startup_worker():
-    global SYSTEM_ACTIVE, SERVER_MSG
-    print("[INFO] Startup: Active for 5s to connect server...")
-    time.sleep(10)
-    if SERVER_MSG != "SCANNING...":
-        SYSTEM_ACTIVE = False
-        SERVER_MSG = "STOPPED"
-        print("[INFO] Startup finished. System inactive.")
+        # Chỉ lấy frame từ sender_frame_queue và gửi đi ngay lập tức
+        frame = sender_frame_queue.get()
+        sender.send_image(camera_name, frame)
 
 # ---------------------
 # MAIN
@@ -338,30 +261,24 @@ if __name__ == "__main__":
     # Model
     model = YOLO(CONFIG["model_name"], task="detect")
 
-    # Queues
-    q_raw = Queue(maxsize=CONFIG["queue_size"])    # Camera -> Inference
-    q_data = Queue(maxsize=CONFIG["queue_size"])   # Inference -> FSM
-    q_result = Queue(maxsize=CONFIG["queue_size"]) # FSM -> Sender
+    # MQTT
+    mqtt_client = mqtt.Client()
+    try:
+        mqtt_client.connect(CONFIG["server_ip"], 1883, 60)
+        mqtt_client.loop_start()
+    except Exception as e:
+        print(f"[ERROR] MQTT Connection: {e}")
 
-    # MQTT Client Start
-    if 'mqtt' in globals():
-        mqtt_client = mqtt.Client()
-        mqtt_client.on_connect = on_mqtt_connect
-        mqtt_client.on_message = on_mqtt_message
-        print(f"[INFO] Connecting MQTT to {MQTT_BROKER}...")
-        try:
-            mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
-            mqtt_client.loop_start()
-        except Exception as e:
-            print(f"[ERROR] MQTT Connection failed: {e}")
-            print(f"[HINT] Kiểm tra Mosquitto trên Server đã có 'listener 1883' và 'allow_anonymous true' chưa?")
+    # Queues
+    frame_queue = Queue(maxsize=CONFIG["queue_size"])
+    detection_queue = Queue(maxsize=CONFIG["queue_size"])
+    sender_frame_queue = Queue(maxsize=CONFIG["queue_size"])
 
     # Threads
-    Thread(target=camera_worker, args=(picam2, q_raw), daemon=True).start()
-    Thread(target=inference_worker, args=(model, q_raw, q_data), daemon=True).start()
-    Thread(target=scan_fsm_worker, args=(q_data, q_result), daemon=True).start()
-    Thread(target=sender_worker, args=(q_result, CONFIG["server_address"], CONFIG["camera_name"]), daemon=True).start()
-    Thread(target=startup_worker, daemon=True).start()
+    Thread(target=camera_worker, args=(picam2, frame_queue), daemon=True).start()
+    Thread(target=inference_worker, args=(model, frame_queue, detection_queue, sender_frame_queue), daemon=True).start()
+    Thread(target=scan_fsm_worker, args=(detection_queue, mqtt_client, CONFIG["camera_name"]), daemon=True).start()
+    Thread(target=sender_worker, args=(sender_frame_queue, CONFIG["server_address"], CONFIG["camera_name"]), daemon=True).start()
 
     print("[INFO] System running. Ctrl+C to stop.")
 
@@ -369,7 +286,5 @@ if __name__ == "__main__":
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
-        if 'mqtt_client' in locals():
-            mqtt_client.loop_stop()
         picam2.stop()
         print("\n[INFO] Stopped.")
