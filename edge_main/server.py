@@ -1,6 +1,7 @@
 import cv2
 import imagezmq
 import zmq
+import json
 
 def main():
     """
@@ -21,12 +22,21 @@ def main():
     try:
         while True:
             try:
-                cam_name, frame = image_hub.recv_image()
+                msg, frame = image_hub.recv_image()
             except zmq.Again:
                 # Không có frame → vẫn cho UI sống
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     break
                 continue
+            
+            # Parse JSON message
+            try:
+                data = json.loads(msg)
+                cam_name = data.get("camera_name", "Unknown")
+                counter = data.get("counter", {})
+                # print(f"[{cam_name}] Counter: {counter}") 
+            except Exception:
+                cam_name = msg
 
             if cam_name not in connected_clients:
                 print(f"[INFO] Client connected: {cam_name}")

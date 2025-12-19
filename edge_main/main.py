@@ -2,6 +2,7 @@ import os
 import csv
 import gc
 import time
+import json
 import queue
 from threading import Thread
 from queue import Queue
@@ -57,7 +58,7 @@ CONFIG = {
     "server_ip": os.getenv("server_ip", "127.0.0.1"),
     "server_port": 5555,
     "camera_name": "raspi_cam",
-    "queue_size": 1, # Tăng buffer lên 3 để tránh blocking dây chuyền
+    "queue_size": 1, 
     "conf_threshold": 0.45,
     "nms_threshold": 0.45,
 }
@@ -122,14 +123,14 @@ def inference_worker(model: YOLO, frame_queue: Queue, sender_frame_queue: Queue)
 
         # SỬA: Dùng put_nowait + try-except để không block
         try:
-            sender_frame_queue.put_nowait(annotated)
+            sender_frame_queue.put_nowait((annotated, frame_counter))
         except queue.Full:
             # Drop frame cũ, put frame mới
             try:
                 sender_frame_queue.get_nowait()
             except queue.Empty:
                 pass
-            sender_frame_queue.put_nowait(annotated)
+            sender_frame_queue.put_nowait((annotated, frame_counter))
 
         # --- GIẢI PHÓNG BỘ NHỚ THỦ CÔNG ---
         # Xóa các biến nặng ngay lập tức để tránh OOM trên Pi Zero 2W
@@ -180,9 +181,14 @@ if __name__ == "__main__":
 
     try:
         while True:
-            frame = sender_frame_queue.get()
-            sender.send_image(CONFIG["camera_name"], frame)
+            frame, counter = sender_frame_queue.get()
+            msg = {
+                "camera_name": CONFIG["camera_name"],
+                "counter": dict(counter)
+            }
+            sender.send_image(json.dumps(msg), frame)
             del frame
+            del counter
     except KeyboardInterrupt:
         picam2.stop()
         print("\n[INFO] Stopped.")
