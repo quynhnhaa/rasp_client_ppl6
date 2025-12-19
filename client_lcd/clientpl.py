@@ -144,7 +144,7 @@ def lcd_worker(q, lcd_obj):
     # Clear screen once at the start
     if lcd_obj:
         lcd_obj.clear()
-
+    # Loop to process incoming messages
     while True:
         item = q.get()
         if item == (None, None, None):  # Sentinel for shutdown

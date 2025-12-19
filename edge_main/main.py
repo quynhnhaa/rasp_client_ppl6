@@ -27,28 +27,10 @@ def load_class_names_from_yaml(metadata_path):
     try:
         with open(metadata_path, 'r', encoding='utf-8') as f:
             metadata = yaml.safe_load(f)
-        class_names = [name for _, name in sorted(metadata['names'].items())]
-        return class_names, metadata.get('imgsz', (320, 320))
+        return metadata.get('imgsz', (320, 320))
     except Exception as e:
         print("[ERROR] Metadata:", e)
-        return ["product"], (320, 320)
-
-def load_price_map(file_path):
-    price_map = {}
-    try:
-        with open(file_path, mode='r', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                label = row.get('label', '').strip()
-                price_str = row.get('price', '0').strip()
-                if label and price_str:
-                    try:
-                        price_map[label] = int(price_str)
-                    except ValueError:
-                        pass
-    except Exception as e:
-        print(f"[ERROR] Loading prices: {e}")
-    return price_map
+        return (320, 320)
 
 # ---------------------
 # CONFIG
@@ -64,12 +46,9 @@ CONFIG = {
 }
 
 metadata_path = os.path.join(project_dir, CONFIG["model_name"], "metadata.yaml")
-CONFIG["class_names"], CONFIG["camera_resolution"] = load_class_names_from_yaml(metadata_path)
+CONFIG["camera_resolution"] = load_class_names_from_yaml(metadata_path)
 CONFIG["server_address"] = f"tcp://{CONFIG['server_ip']}:{CONFIG['server_port']}"
-
-price_map_path = os.path.join(project_dir, "product_price.csv")
-PRICE_MAP = load_price_map(price_map_path)
-
+del metadata_path
 # ---------------------
 # THREAD 1: CAMERA
 # ---------------------
@@ -83,7 +62,7 @@ def camera_worker(picam2, frame_queue: Queue):
         del frame
 
 # ---------------------
-# THREAD 2: INFERENCE ONLY
+# THREAD 2: INFERENCE
 # ---------------------
 def inference_worker(model: YOLO, frame_queue: Queue, sender_frame_queue: Queue):
     prev_time = time.time()
