@@ -309,18 +309,6 @@ def mqtt_worker(mqtt_queue: Queue, mqtt_client, camera_name: str):
         mqtt_client.publish(f"scan/{camera_name}", payload)
 
 # ---------------------
-# THREAD 4: SENDER
-# ---------------------
-def sender_worker(sender_frame_queue: Queue, server_address: str, camera_name: str):
-    sender = imagezmq.ImageSender(connect_to=server_address)
-    print(f"[INFO] Connected to server {server_address}")
-
-    while True:
-        # Chỉ lấy frame từ sender_frame_queue và gửi đi ngay lập tức
-        frame = sender_frame_queue.get()
-        sender.send_image(camera_name, frame)
-
-# ---------------------
 # MAIN
 # ---------------------
 if __name__ == "__main__":
@@ -360,13 +348,16 @@ if __name__ == "__main__":
     Thread(target=inference_worker, args=(model, frame_queue, detection_queue, sender_frame_queue), daemon=True).start()
     Thread(target=scan_fsm_worker, args=(detection_queue, mqtt_queue), daemon=True).start()
     Thread(target=mqtt_worker, args=(mqtt_queue, mqtt_client, CONFIG["camera_name"]), daemon=True).start()
-    Thread(target=sender_worker, args=(sender_frame_queue, CONFIG["server_address"], CONFIG["camera_name"]), daemon=True).start()
 
     print("[INFO] System running. Ctrl+C to stop.")
 
+    sender = imagezmq.ImageSender(connect_to=CONFIG["server_address"])
+    print(f"[INFO] Connected to server {CONFIG['server_address']}")
+
     try:
         while True:
-            time.sleep(1)
+            frame = sender_frame_queue.get()
+            sender.send_image(CONFIG["camera_name"], frame)
     except KeyboardInterrupt:
         picam2.stop()
         print("\n[INFO] Stopped.")
