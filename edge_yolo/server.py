@@ -25,6 +25,7 @@ def on_mqtt_message(client, userdata, msg):
             cam_name = parts[1]
             payload = json.loads(msg.payload.decode())
             CAMERA_DATA[cam_name] = payload
+            print(f"[{cam_name}] MQTT: {payload}")
     except Exception as e:
         print(f"[MQTT] Error: {e}")
 
@@ -70,30 +71,6 @@ def main():
 
             # Thay đổi kích thước frame để hiển thị lớn hơn
             display_frame = cv2.resize(frame, display_size, interpolation=cv2.INTER_NEAREST)
-
-            # Lấy dữ liệu từ MQTT để vẽ lên frame
-            data = CAMERA_DATA.get(cam_name, {})
-            current = data.get("current", {})
-            total = data.get("total", {})
-            money = data.get("money", 0)
-
-            # Vẽ thông tin
-            cv2.putText(display_frame, f"MONEY: {money:,} VND", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-            
-            y = 60
-            if current:
-                cv2.putText(display_frame, "SCANNING:", (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-                y += 25
-                for k, v in current.items():
-                    cv2.putText(display_frame, f"- {k}: {v}", (20, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
-                    y += 20
-            
-            y += 10
-            cv2.putText(display_frame, "TOTAL:", (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-            y += 25
-            for k, v in total.items():
-                cv2.putText(display_frame, f"- {k}: {v}", (20, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
-                y += 20
 
             # Hiển thị khung hình trong một cửa sổ có tên là tên của camera
             cv2.imshow(cam_name, display_frame)

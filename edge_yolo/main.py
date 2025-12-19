@@ -126,14 +126,31 @@ def inference_worker(model: YOLO, frame_queue: Queue, detection_queue: Queue, se
         # Draw FPS
         cv2.putText(annotated, f"FPS: {fps:.1f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
 
-        # Đẩy frame trực tiếp cho Sender
-        sender_frame_queue.put(annotated)
+        # SỬA: Dùng put_nowait + try-except để không block
+        try:
+            sender_frame_queue.put_nowait(annotated)
+        except queue.Full:
+            # Drop frame cũ, put frame mới
+            try:
+                sender_frame_queue.get_nowait()
+            except queue.Empty:
+                pass
+            sender_frame_queue.put_nowait(annotated)
 
-        # Chỉ đẩy metadata cho Scan FSM
-        detection_queue.put({
-            "time": time.time(),
-            "counter": frame_counter
-        })
+        try:
+            detection_queue.put_nowait({
+                "time": time.time(),
+                "counter": frame_counter
+            })
+        except queue.Full:
+            try:
+                detection_queue.get_nowait()
+            except queue.Empty:
+                pass
+            detection_queue.put_nowait({
+                "time": time.time(),
+                "counter": frame_counter
+            })
 
         # --- GIẢI PHÓNG BỘ NHỚ THỦ CÔNG ---
         # Xóa các biến nặng ngay lập tức để tránh OOM trên Pi Zero 2W
