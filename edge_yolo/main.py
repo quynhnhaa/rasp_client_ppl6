@@ -169,12 +169,16 @@ def inference_worker(model: YOLO, frame_queue: Queue, detection_queue: Queue, se
 # ---------------------
 # THREAD 3: SCAN FSM
 # ---------------------
-def scan_fsm_worker(detection_queue: Queue, mqtt_client, camera_name: str):
+def scan_fsm_worker(detection_queue: Queue, mqtt_queue: Queue):
     state = ScanState.IDLE
     last_seen_time = 0
     batch_frame_counters = []
     session_total = Counter()  # Mục "đã quét" (tổng các đợt)
     current_scanning = {}    # Mục "đang quét" (đợt hiện tại)
+    
+    last_mqtt_send_time = 0
+    MQTT_INTERVAL = 0.5  # Giới hạn gửi MQTT mỗi 0.5s (tránh spam)
+
     while True:
         data = detection_queue.get()
         frame_counter = data["counter"]
@@ -219,13 +223,26 @@ def scan_fsm_worker(detection_queue: Queue, mqtt_client, camera_name: str):
                     batch_frame_counters = []
                 # else: Điều kiện sai -> Vẫn giữ ở mục "đang quét" (current_scanning)
 
-        # Gửi dữ liệu qua MQTT liên tục
-        total_money = sum(PRICE_MAP.get(k, 0) * v for k, v in session_total.items())
-        payload = json.dumps({
-            "current": current_scanning,
-            "total": dict(session_total),
-            "money": total_money
-        })
+        # Gửi dữ liệu qua MQTT (có giới hạn thời gian)
+        if time.time() - last_mqtt_send_time > MQTT_INTERVAL:
+            total_money = sum(PRICE_MAP.get(k, 0) * v for k, v in session_total.items())
+            try:
+                mqtt_queue.put_nowait({
+                    "current": current_scanning,
+                    "total": dict(session_total),
+                    "money": total_money
+                })
+                last_mqtt_send_time = time.time()
+            except queue.Full:
+                pass
+
+# ---------------------
+# THREAD 5: MQTT WORKER
+# ---------------------
+def mqtt_worker(mqtt_queue: Queue, mqtt_client, camera_name: str):
+    while True:
+        data = mqtt_queue.get()
+        payload = json.dumps(data)
         mqtt_client.publish(f"scan/{camera_name}", payload)
 
 # ---------------------
@@ -271,11 +288,13 @@ if __name__ == "__main__":
     frame_queue = Queue(maxsize=CONFIG["queue_size"])
     detection_queue = Queue(maxsize=CONFIG["queue_size"])
     sender_frame_queue = Queue(maxsize=CONFIG["queue_size"])
+    mqtt_queue = Queue(maxsize=CONFIG["queue_size"])
 
     # Threads
     Thread(target=camera_worker, args=(picam2, frame_queue), daemon=True).start()
     Thread(target=inference_worker, args=(model, frame_queue, detection_queue, sender_frame_queue), daemon=True).start()
-    Thread(target=scan_fsm_worker, args=(detection_queue, mqtt_client, CONFIG["camera_name"]), daemon=True).start()
+    Thread(target=scan_fsm_worker, args=(detection_queue, mqtt_queue), daemon=True).start()
+    Thread(target=mqtt_worker, args=(mqtt_queue, mqtt_client, CONFIG["camera_name"]), daemon=True).start()
     Thread(target=sender_worker, args=(sender_frame_queue, CONFIG["server_address"], CONFIG["camera_name"]), daemon=True).start()
 
     print("[INFO] System running. Ctrl+C to stop.")
