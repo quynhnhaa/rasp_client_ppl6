@@ -229,8 +229,12 @@ def scan_fsm_worker(detection_queue: Queue, mqtt_queue: Queue):
             
             # Xả hàng đợi cũ (nếu có) và ngủ để tiết kiệm CPU
             while not detection_queue.empty():
-                try: detection_queue.get_nowait()
-                except queue.Empty: break
+                try: 
+                    # THIẾU: Cần del item lấy ra
+                    item = detection_queue.get_nowait()
+                    del item
+                except queue.Empty: 
+                    break
             time.sleep(0.1)
             continue
 
@@ -241,7 +245,7 @@ def scan_fsm_worker(detection_queue: Queue, mqtt_queue: Queue):
 
         frame_counter = data["counter"]
         now = data["time"]  
-
+        del data # Giải phóng bộ nhớ ngay sau khi dùng xong
         if state == ScanState.IDLE:
             if frame_counter:
                 state = ScanState.SCANNING
@@ -260,7 +264,8 @@ def scan_fsm_worker(detection_queue: Queue, mqtt_queue: Queue):
                 if votes:
                     best, _ = votes.most_common(1)[0]
                     current_scanning = dict(best)
-
+                    del best
+                del votes
             if not frame_counter:
                 if now - last_seen_time > EMPTY_TIMEOUT:
                     # Điều kiện thoả mãn: Kết thúc đợt -> Chuyển từ "đang quét" sang "đã quét"
@@ -276,15 +281,14 @@ def scan_fsm_worker(detection_queue: Queue, mqtt_queue: Queue):
                             # total_money = sum(PRICE_MAP.get(k, 0) * v for k, v in session_total.items())
                             # print(f"[SESSION TOTAL] → {dict(session_total)} | Money: {total_money:,} VND")
 
-                        current_scanning = {}
+                        current_scanning.clear()
 
                     state = ScanState.IDLE
-                    batch_frame_counters = []
+                    batch_frame_counters.clear()
                 # else: Điều kiện sai -> Vẫn giữ ở mục "đang quét" (current_scanning)
 
         # Gửi dữ liệu qua MQTT (có giới hạn thời gian)
         if time.time() - last_mqtt_send_time > MQTT_INTERVAL:
-            total_money = sum(PRICE_MAP.get(k, 0) * v for k, v in session_total.items())
             try:
                 mqtt_queue.put_nowait({
                     "current": current_scanning,
@@ -293,9 +297,6 @@ def scan_fsm_worker(detection_queue: Queue, mqtt_queue: Queue):
                 last_mqtt_send_time = time.time()
             except queue.Full:
                 pass
-        
-        # [CLEANUP] Xóa biến tạm sau mỗi vòng lặp để tránh tích tụ
-        del data
         del frame_counter
 
 # ---------------------
