@@ -219,7 +219,6 @@ def on_mqtt_message(client, userdata, msg):
 def camera_worker(picam2, frame_queue: Queue):
     while True:
         frame = picam2.capture_array()
-        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
         try:
             frame_queue.put(frame, timeout=0.1)
         except queue.Full:
@@ -356,9 +355,14 @@ if __name__ == "__main__":
                 "counter": dict(counter),
                 "time": timestamp
             }
-            sender.send_image(json.dumps(msg), frame)
+            ok, jpg_buffer = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
+            jpg_buffer_array = np.array(jpg_buffer).tobytes()
+            sender.send_image(json.dumps(msg), jpg_buffer_array)
             del frame
             del counter
+            del timestamp
+            del jpg_buffer
+            del jpg_buffer_array
     except KeyboardInterrupt:
         mqtt_client.loop_stop()
         if lcd: lcd.close(clear=True)
