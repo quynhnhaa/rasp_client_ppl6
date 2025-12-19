@@ -10,6 +10,7 @@ import yaml
 from collections import Counter
 from enum import Enum
 import paho.mqtt.client as mqtt
+import zmq
 
 # ---------------------
 # ENV
@@ -121,83 +122,87 @@ def inference_worker(model: YOLO, frame_queue: Queue, detection_queue: Queue, se
     global SYSTEM_ACTIVE, SERVER_MSG
     prev_time = time.time()
     count_gc = 0
-    while True:
-        frame = frame_queue.get()
+    
+    try:
+        while True:
+            frame = frame_queue.get()
 
-        # Calculate FPS
-        curr_time = time.time()
-        fps = 1 / (curr_time - prev_time) if (curr_time - prev_time) > 0 else 0
-        prev_time = curr_time
+            # Calculate FPS
+            curr_time = time.time()
+            fps = 1 / (curr_time - prev_time) if (curr_time - prev_time) > 0 else 0
+            prev_time = curr_time
 
-        frame_counter = Counter()
-        annotated = frame
+            frame_counter = Counter()
+            annotated = frame
 
-        if SYSTEM_ACTIVE:
-            results = model.predict(
-                source=frame,
-                conf=CONFIG["conf_threshold"],
-                iou=CONFIG["nms_threshold"],
-                verbose=False
-            )
-            result = results[0]
+            if SYSTEM_ACTIVE:
+                results = model.predict(
+                    source=frame,
+                    conf=CONFIG["conf_threshold"],
+                    iou=CONFIG["nms_threshold"],
+                    verbose=False
+                )
+                result = results[0]
 
-            if result.boxes is not None and len(result.boxes) > 0:
-                cls_ids = result.boxes.cls.cpu().numpy().astype(int)
-                for cid in cls_ids:
-                    frame_counter[result.names[cid]] += 1
-            
-            annotated = result.plot(font_size=0.4, line_width=1)
-            del results, result
-        else:
-            cv2.putText(annotated, SERVER_MSG, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+                if result.boxes is not None and len(result.boxes) > 0:
+                    cls_ids = result.boxes.cls.cpu().numpy().astype(int)
+                    for cid in cls_ids:
+                        frame_counter[result.names[cid]] += 1
+                
+                annotated = result.plot(font_size=0.4, line_width=1)
+                del results, result
+            else:
+                cv2.putText(annotated, SERVER_MSG, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
-        # Draw FPS
-        cv2.putText(annotated, f"FPS: {fps:.1f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
+            # Draw FPS
+            cv2.putText(annotated, f"FPS: {fps:.1f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
 
-        # [AN TOÀN] Đẩy frame vào sender queue
-        try:
-            sender_frame_queue.put_nowait(annotated)
-        except queue.Full:
-            # Drop frame cũ, put frame mới
-            try:
-                sender_frame_queue.get_nowait()
-            except queue.Empty:
-                pass
+            # [AN TOÀN] Đẩy frame vào sender queue
             try:
                 sender_frame_queue.put_nowait(annotated)
             except queue.Full:
-                pass # Nếu vẫn full thì chấp nhận drop frame này, không để crash thread
-
-        if SYSTEM_ACTIVE:
-            try:
-                detection_queue.put_nowait({
-                    "time": time.time(),
-                    "counter": frame_counter
-                })
-            except queue.Full:
+                # Drop frame cũ, put frame mới
                 try:
-                    detection_queue.get_nowait()
+                    sender_frame_queue.get_nowait()
                 except queue.Empty:
                     pass
+                try:
+                    sender_frame_queue.put_nowait(annotated)
+                except queue.Full:
+                    pass # Nếu vẫn full thì chấp nhận drop frame này, không để crash thread
+
+            if SYSTEM_ACTIVE:
                 try:
                     detection_queue.put_nowait({
                         "time": time.time(),
                         "counter": frame_counter
                     })
                 except queue.Full:
-                    pass # Drop data nếu FSM xử lý không kịp
+                    try:
+                        detection_queue.get_nowait()
+                    except queue.Empty:
+                        pass
+                    try:
+                        detection_queue.put_nowait({
+                            "time": time.time(),
+                            "counter": frame_counter
+                        })
+                    except queue.Full:
+                        pass # Drop data nếu FSM xử lý không kịp
 
-        # --- GIẢI PHÓNG BỘ NHỚ THỦ CÔNG ---
-        # Xóa các biến nặng ngay lập tức để tránh OOM trên Pi Zero 2W
-        del frame
-        # annotated đã được put vào queue, sender sẽ lo, ở đây ta xóa tham chiếu cục bộ
-        del annotated
-        
-        # Ép chạy Garbage Collection mỗi 30 frame để dọn sạch RAM
-        count_gc += 1
-        if count_gc > 30:
-            gc.collect()
-            count_gc = 0
+            # --- GIẢI PHÓNG BỘ NHỚ THỦ CÔNG ---
+            # Xóa các biến nặng ngay lập tức để tránh OOM trên Pi Zero 2W
+            del frame
+            # annotated đã được put vào queue, sender sẽ lo, ở đây ta xóa tham chiếu cục bộ
+            del annotated
+            
+            # Ép chạy Garbage Collection mỗi 30 frame để dọn sạch RAM
+            count_gc += 1
+            if count_gc > 30:
+                gc.collect()
+                count_gc = 0
+    except Exception as e:
+        print(f"[CRITICAL] Inference Worker Died: {e}")
 
 # ---------------------
 # THREAD 3: SCAN FSM
@@ -304,6 +309,9 @@ def mqtt_worker(mqtt_queue: Queue, mqtt_client, camera_name: str):
 # ---------------------
 def sender_worker(sender_frame_queue: Queue, server_address: str, camera_name: str):
     sender = imagezmq.ImageSender(connect_to=server_address)
+    # Set timeout 2s cho cả gửi và nhận để tránh bị treo mãi mãi
+    sender.zmq_socket.setsockopt(zmq.RCVTIMEO, 2000)
+    sender.zmq_socket.setsockopt(zmq.SNDTIMEO, 2000)
     print(f"[INFO] Connected to server {server_address}")
 
     while True:
@@ -311,8 +319,15 @@ def sender_worker(sender_frame_queue: Queue, server_address: str, camera_name: s
         try:
             frame = sender_frame_queue.get()
             sender.send_image(camera_name, frame)
-        except Exception as e:
+        except (zmq.Again, Exception) as e:
             print(f"[WARNING] Sender Error: {e}")
+            print("[INFO] Reconnecting to server...")
+            try:
+                sender.close()
+            except: pass
+            sender = imagezmq.ImageSender(connect_to=server_address)
+            sender.zmq_socket.setsockopt(zmq.RCVTIMEO, 2000)
+            sender.zmq_socket.setsockopt(zmq.SNDTIMEO, 2000)
 
 # ---------------------
 # MAIN

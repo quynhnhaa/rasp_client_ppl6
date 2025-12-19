@@ -106,18 +106,21 @@ def main():
                     break
                 continue
 
-            CURRENT_CAM_NAME = cam_name
+            try:
+                CURRENT_CAM_NAME = cam_name
 
-            # In thông báo nếu đây là client mới
-            if cam_name not in connected_clients:
-                print(f"[INFO] Nhan duoc ket noi moi tu client: {cam_name}")
-                connected_clients.add(cam_name)
+                # In thông báo nếu đây là client mới
+                if cam_name not in connected_clients:
+                    print(f"[INFO] Nhan duoc ket noi moi tu client: {cam_name}")
+                    connected_clients.add(cam_name)
 
-            # Thay đổi kích thước frame để hiển thị lớn hơn
-            display_frame = cv2.resize(frame, display_size, interpolation=cv2.INTER_NEAREST)
+                # Thay đổi kích thước frame để hiển thị lớn hơn
+                display_frame = cv2.resize(frame, display_size, interpolation=cv2.INTER_NEAREST)
 
-            # Hiển thị khung hình trong một cửa sổ có tên là tên của camera
-            cv2.imshow(cam_name, display_frame)
+                # Hiển thị khung hình trong một cửa sổ có tên là tên của camera
+                cv2.imshow(cam_name, display_frame)
+            except Exception as e:
+                print(f"[ERROR] Processing frame: {e}")
 
             # Chờ 1ms và kiểm tra nếu người dùng nhấn phím 'q' để thoát
             if cv2.waitKey(1) & 0xFF == ord('q'):
