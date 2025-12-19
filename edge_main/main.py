@@ -10,6 +10,9 @@ import yaml
 from collections import Counter
 import numpy as np
 import paho.mqtt.client as mqtt
+import zmq
+import signal
+import sys
 
 try:
     from RPLCD.i2c import CharLCD
@@ -198,7 +201,7 @@ def safe_queue_get(q, timeout=0.1):
     """Get item từ queue với timeout"""
     try:
         return q.get(timeout=timeout), True
-    except:
+    except queue.Empty:
         return None, False
 
 # ---------------------
@@ -347,6 +350,11 @@ if __name__ == "__main__":
     # Events
     scanning_event = Event()
     stop_event = Event()
+
+    def signal_handler(sig, frame):
+        print("\n[INFO] Ctrl+C detected. Stopping...")
+        stop_event.set()
+    signal.signal(signal.SIGINT, signal_handler)
     
     # Camera
     picam2 = Picamera2()
@@ -393,6 +401,9 @@ if __name__ == "__main__":
         connect_to=CONFIG["server_address"],
         REQ_REP=True  # ← THAY ĐỔI QUAN TRỌNG!
     )
+    # Set timeout để không bị treo khi server chết (2000ms = 2s)
+    sender.zmq_socket.setsockopt(zmq.RCVTIMEO, 2000)
+    sender.zmq_socket.setsockopt(zmq.LINGER, 0)
     print(f"[INFO] Connected to server (PUB-SUB mode)")
     
     # Main loop với timeout
@@ -402,7 +413,7 @@ if __name__ == "__main__":
     watchdog_timeout = 5.0  # 5 giây không có frame → cảnh báo
     
     try:
-        while True:
+        while not stop_event.is_set():
             # Get result với timeout
             data, ok = safe_queue_get(result_queue, timeout=1.0)
             
@@ -419,6 +430,8 @@ if __name__ == "__main__":
                 # Send (non-blocking với PUB-SUB)
                 try:
                     sender.send_image(json.dumps(msg), frame)
+                except zmq.Again:
+                    print("[WARNING] Server timeout.")
                 except Exception as e:
                     print(f"[ERROR] Send: {e}")
                 
