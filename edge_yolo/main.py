@@ -10,6 +10,12 @@ import yaml
 from collections import Counter
 from enum import Enum
 
+# MQTT Library
+try:
+    import paho.mqtt.client as mqtt
+except ImportError:
+    print("[WARNING] paho-mqtt not installed. Run: pip install paho-mqtt")
+
 # ---------------------
 # ENV
 # ---------------------
@@ -72,6 +78,42 @@ price_map_path = os.path.join(project_dir, "product_price.csv")
 PRICE_MAP = load_price_map(price_map_path)
 
 # ---------------------
+# MQTT CONFIG & STATE
+# ---------------------
+MQTT_BROKER = CONFIG["server_ip"]
+MQTT_PORT = 1883
+
+# Tạo topic riêng cho từng Pi dựa trên camera_name
+MQTT_TOPIC_CMD = f"cmd/{CONFIG['camera_name']}"   # Server gửi lệnh SCAN/STOP vào đây
+
+SYSTEM_ACTIVE = True      # Mặc định là True để kết nối server lúc đầu
+SERVER_MSG = "READY"      # Thông điệp hiển thị
+
+def on_mqtt_connect(client, userdata, flags, rc):
+    if rc == 0:
+        print(f"[MQTT] Connected. Subscribing to: {MQTT_TOPIC_CMD}")
+        client.subscribe(MQTT_TOPIC_CMD)
+    else:
+        print(f"[MQTT] Connection failed: {rc}")
+
+def on_mqtt_message(client, userdata, msg):
+    global SYSTEM_ACTIVE, SERVER_MSG
+    payload = msg.payload.decode('utf-8').strip()
+    
+    if msg.topic == MQTT_TOPIC_CMD:
+        if payload.upper() == "SCAN":
+            SYSTEM_ACTIVE = True
+            SERVER_MSG = "SCANNING..."
+            print(f"[CMD] START SCANNING on {CONFIG['camera_name']}")
+        elif payload.upper() == "STOP":
+            SYSTEM_ACTIVE = False
+            SERVER_MSG = "STOPPED"
+            print(f"[CMD] STOPPED on {CONFIG['camera_name']}")
+        elif payload.upper().startswith("TONGTIEN:"):
+            money_str = payload.split(":", 1)[1].strip()
+            print(SERVER_MSG = f"TOTAL: {money_str} VND")
+
+# ---------------------
 # FSM
 # ---------------------
 class ScanState(Enum):
@@ -92,13 +134,22 @@ def camera_worker(picam2, frame_queue: Queue):
             pass
 
 # ---------------------
-# THREAD 2: INFERENCE ONLY
+# THREAD 2: INFERENCE
 # ---------------------
 def inference_worker(model: YOLO, frame_queue: Queue, detection_queue: Queue, sender_frame_queue: Queue):
+    global SYSTEM_ACTIVE, SERVER_MSG
     prev_time = time.time()
     count_gc = 0
     while True:
+        # Luôn lấy frame ra khỏi queue để tránh camera bị block (queue full)
         frame = frame_queue.get()
+
+        # Nếu chưa có lệnh SCAN, hủy frame và tiếp tục vòng lặp (không infer, không gửi)
+        if not SYSTEM_ACTIVE:
+            del frame
+            # Ngủ nhẹ để giảm tải CPU khi idle
+            time.sleep(0.1)
+            continue
 
         # Calculate FPS
         curr_time = time.time()
@@ -158,7 +209,35 @@ def scan_fsm_worker(detection_queue: Queue, result_queue: Queue):
     session_total = Counter()  # Mục "đã quét" (tổng các đợt)
     current_scanning = {}    # Mục "đang quét" (đợt hiện tại)
     while True:
-        data = detection_queue.get()
+        # Nếu hệ thống dừng, reset trạng thái FSM
+        if not SYSTEM_ACTIVE:
+            # Chỉ reset nếu đang có dữ liệu cũ (để tránh print/reset liên tục mỗi vòng lặp)
+            if state != ScanState.IDLE or session_total:
+                state = ScanState.IDLE
+                last_seen_time = 0
+                batch_frame_counters = []
+                session_total = Counter() 
+                current_scanning = {}
+                print("[FSM] Session Reset (STOPPED)")
+            
+            # Xả sạch hàng đợi cũ (nếu có) và ngủ để tiết kiệm CPU
+            while not detection_queue.empty():
+                try: 
+                    detection_queue.get_nowait()
+                    # [QUAN TRỌNG] Phải đẩy kết quả rỗng vào result_queue.
+                    # Vì sender_worker đang giữ 1 frame và chờ 1 result tương ứng.
+                    # Nếu không trả về, sender sẽ bị treo vĩnh viễn (Deadlock).
+                    result_queue.put({"current": {}, "total": {}})
+                except queue.Empty: break
+            time.sleep(0.1)
+            continue
+
+        try:
+            # Dùng timeout để vòng lặp không bị treo nếu không có dữ liệu
+            data = detection_queue.get(timeout=0.1)
+        except queue.Empty:
+            continue
+
         frame_counter = data["counter"]
         now = data["time"]  
 
@@ -225,6 +304,15 @@ def sender_worker(result_queue: Queue, sender_frame_queue: Queue, server_address
         }
         sender.send_image(json.dumps(msg), frame)
 
+def startup_worker():
+    global SYSTEM_ACTIVE, SERVER_MSG
+    print("[INFO] Startup: Active for 5s to connect server...")
+    time.sleep(5)
+    if SERVER_MSG != "SCANNING...":
+        SYSTEM_ACTIVE = False
+        SERVER_MSG = "STOPPED"
+        print("[INFO] Startup finished. System inactive.")
+
 # ---------------------
 # MAIN
 # ---------------------
@@ -250,11 +338,21 @@ if __name__ == "__main__":
     result_queue = Queue(maxsize=CONFIG["queue_size"])
     sender_frame_queue = Queue(maxsize=CONFIG["queue_size"])
 
+    # MQTT Client Start
+    if 'mqtt' in globals():
+        mqtt_client = mqtt.Client()
+        mqtt_client.on_connect = on_mqtt_connect
+        mqtt_client.on_message = on_mqtt_message
+        print(f"[INFO] Connecting MQTT to {MQTT_BROKER}...")
+        mqtt_client.connect_async(MQTT_BROKER, MQTT_PORT, 60)
+        mqtt_client.loop_start()
+
     # Threads
     Thread(target=camera_worker, args=(picam2, frame_queue), daemon=True).start()
     Thread(target=inference_worker, args=(model, frame_queue, detection_queue, sender_frame_queue), daemon=True).start()
     Thread(target=scan_fsm_worker, args=(detection_queue, result_queue), daemon=True).start()
     Thread(target=sender_worker, args=(result_queue, sender_frame_queue, CONFIG["server_address"], CONFIG["camera_name"]), daemon=True).start()
+    Thread(target=startup_worker, daemon=True).start()
 
     print("[INFO] System running. Ctrl+C to stop.")
 
@@ -262,5 +360,7 @@ if __name__ == "__main__":
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
+        if 'mqtt_client' in locals():
+            mqtt_client.loop_stop()
         picam2.stop()
         print("\n[INFO] Stopped.")
