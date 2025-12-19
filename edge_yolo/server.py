@@ -4,16 +4,12 @@ import imagezmq
 import traceback
 import paho.mqtt.client as mqtt
 import zmq
-import threading
-import sys
 
 # Cấu hình MQTT
 MQTT_BROKER = "localhost"
 MQTT_PORT = 1883
 MQTT_TOPIC_SUB = "scan/#"
 
-CURRENT_CAM_NAME = None
-IS_RUNNING = True
 CAMERA_DATA = {} # Lưu dữ liệu từ MQTT: {"cam_name": {"current": {}, "total": {}, "money": 0}}
 
 def on_mqtt_connect(client, userdata, flags, rc):
@@ -33,44 +29,10 @@ def on_mqtt_message(client, userdata, msg):
     except Exception as e:
         print(f"[MQTT] Error: {e}")
 
-def console_worker(mqtt_client):
-    """Luồng xử lý nhập lệnh từ console."""
-    global IS_RUNNING, CURRENT_CAM_NAME
-    print("\n[INFO] Console Control Ready.")
-    print("Commands: 's' (SCAN), 'x' (STOP), 'q' (QUIT)\n")
-    
-    while IS_RUNNING:
-        try:
-            cmd_str = input()
-            if not cmd_str: continue
-            
-            cmd = cmd_str.strip().lower()
-            
-            if cmd == 'q':
-                IS_RUNNING = False
-                break
-            
-            if not CURRENT_CAM_NAME:
-                print("[WARNING] Chưa có camera kết nối.")
-                continue
-                
-            topic = f"cmd/{CURRENT_CAM_NAME}"
-            
-            if cmd == 's':
-                mqtt_client.publish(topic, "SCAN")
-                print(f"[CMD] Sent SCAN to {topic}")
-            elif cmd == 'x':
-                mqtt_client.publish(topic, "STOP")
-                print(f"[CMD] Sent STOP to {topic}")
-        except Exception as e:
-            pass
-
 def main():
     """
     Khởi chạy server để nhận và hiển thị video stream từ các client.
     """
-    global CURRENT_CAM_NAME, IS_RUNNING
-
     # Khởi tạo ImageHub để lắng nghe kết nối từ các client.
     image_hub = imagezmq.ImageHub()
     # Set timeout để không bị treo nếu không có ảnh (100ms)
@@ -86,27 +48,21 @@ def main():
     except Exception as e:
         print(f"[ERROR] MQTT Connection: {e}")
 
-    # Khởi chạy luồng console
-    threading.Thread(target=console_worker, args=(mqtt_client,), daemon=True).start()
-
     print("[INFO] Server đang chạy. Đang chờ kết nối từ client...")
     connected_clients = set()
     display_size = (640, 640)  # Kích thước cửa sổ hiển thị mong muốn
 
     try:
         # Vòng lặp vô tận để nhận và hiển thị các khung hình
-        while IS_RUNNING:
+        while True:
             # Nhận tên camera và khung hình từ client
             try:
                 cam_name, frame = image_hub.recv_image()
             except zmq.Again:
                 # Timeout, kiểm tra phím bấm để không treo UI
                 if cv2.waitKey(1) & 0xFF == ord('q'):
-                    IS_RUNNING = False
                     break
                 continue
-
-            CURRENT_CAM_NAME = cam_name
 
             # In thông báo nếu đây là client mới
             if cam_name not in connected_clients:
@@ -121,7 +77,6 @@ def main():
 
             # Chờ 1ms và kiểm tra nếu người dùng nhấn phím 'q' để thoát
             if cv2.waitKey(1) & 0xFF == ord('q'):
-                IS_RUNNING = False
                 break
 
             # Gửi tín hiệu 'OK' về cho client để xác nhận đã nhận ảnh
