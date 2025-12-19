@@ -65,7 +65,7 @@ MQTT_BROKER= "broker.hivemq.com"
 MQTT_PORT = 1883
 MQTT_TOPIC = "pbl6/products"
 MQTT_TOPIC_CMD = f"cmd/{CONFIG['camera_name']}"
-IS_SCANNING = True
+IS_SCANNING = False
 LCD_DISPLAY_DURATION = 3
 
 # ========== Hiển thị trên LCD ==========
