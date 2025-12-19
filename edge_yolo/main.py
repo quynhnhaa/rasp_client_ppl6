@@ -212,9 +212,9 @@ def scan_fsm_worker(detection_queue: Queue, mqtt_client: mqtt.Client, camera_nam
                             print("[SCAN] END →", current_scanning)
                             session_total.update(current_scanning)
                             
-                            # Tính tổng tiền dựa trên PRICE_MAP đã load
-                            total_money = sum(PRICE_MAP.get(k, 0) * v for k, v in session_total.items())
-                            print(f"[SESSION TOTAL] → {dict(session_total)} | Money: {total_money:,} VND")
+                            # Log tổng tiền khi kết thúc phiên (tính toán ở dưới để tránh lặp code)
+                            temp_money = sum(PRICE_MAP.get(k, 0) * v for k, v in session_total.items())
+                            print(f"[SESSION TOTAL] → {dict(session_total)} | Money: {temp_money:,} VND")
 
                         current_scanning = {}
 
@@ -223,7 +223,6 @@ def scan_fsm_worker(detection_queue: Queue, mqtt_client: mqtt.Client, camera_nam
                 # else: Điều kiện sai -> Vẫn giữ ở mục "đang quét" (current_scanning)
 
         # [REAL-TIME] Gửi dữ liệu qua MQTT liên tục mỗi frame (đồng bộ với video)
-        total_money = sum(PRICE_MAP.get(k, 0) * v for k, v in session_total.items())
         payload = json.dumps({
             "current": current_scanning,
             "total": dict(session_total)
