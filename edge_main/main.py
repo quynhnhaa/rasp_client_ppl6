@@ -147,24 +147,6 @@ def inference_worker(model: YOLO, frame_queue: Queue, sender_frame_queue: Queue)
             count_gc = 0
 
 # ---------------------
-# THREAD 4: SENDER
-# ---------------------
-def sender_worker(sender_frame_queue: Queue, server_address: str, camera_name: str):
-    try:
-        sender.send_image(camera_name, frame)
-    except Exception as e:
-        print("[SENDER ERROR]", e)
-        sender = imagezmq.ImageSender(connect_to=server_address)
-
-    print(f"[INFO] Connected to server {server_address}")
-
-    while True:
-        # Chỉ lấy frame từ sender_frame_queue và gửi đi ngay lập tức
-        frame = sender_frame_queue.get()
-        sender.send_image(camera_name, frame)
-        del frame
-
-# ---------------------
 # MAIN
 # ---------------------
 if __name__ == "__main__":
@@ -190,13 +172,17 @@ if __name__ == "__main__":
     # Threads
     Thread(target=camera_worker, args=(picam2, frame_queue), daemon=True).start()
     Thread(target=inference_worker, args=(model, frame_queue, sender_frame_queue), daemon=True).start()
-    Thread(target=sender_worker, args=(sender_frame_queue, CONFIG["server_address"], CONFIG["camera_name"]), daemon=True).start()
 
     print("[INFO] System running. Ctrl+C to stop.")
 
+    sender = imagezmq.ImageSender(connect_to=CONFIG["server_address"])
+    print(f"[INFO] Connected to server {CONFIG['server_address']}")
+
     try:
         while True:
-            time.sleep(1)
+            frame = sender_frame_queue.get()
+            sender.send_image(CONFIG["camera_name"], frame)
+            del frame
     except KeyboardInterrupt:
         picam2.stop()
         print("\n[INFO] Stopped.")
