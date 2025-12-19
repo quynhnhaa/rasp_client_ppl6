@@ -49,7 +49,7 @@ CONFIG = {
     "server_ip": os.getenv("server_ip", "127.0.0.1"),
     "server_port": 5555,
     "camera_name": "raspi_cam",
-    "queue_size": 2,
+    "queue_size": 1,
     "conf_threshold": 0.45,
     "nms_threshold": 0.45,
 }
@@ -396,7 +396,7 @@ if __name__ == "__main__":
     print(f"[INFO] Inference process started (PID: {inference_proc.pid})")
 
     # ===== ImageZMQ Sender (Main Thread) =====
-    sender = imagezmq.ImageSender(connect_to=CONFIG["server_address"])
+    sender = imagezmq.ImageSender(connect_to=server_address, REQ_REP=False)
     print(f"[INFO] Connected to server {CONFIG['server_address']}")
 
     print("[INFO] System running. Ctrl+C to stop.")
