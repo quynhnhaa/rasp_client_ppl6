@@ -100,7 +100,12 @@ def inference_worker(model: YOLO, frame_queue: Queue, detection_queue: Queue, se
     prev_time = time.time()
     count_gc = 0
     while True:
-        frame = frame_queue.get()
+        # frame = frame_queue.get()
+        try:
+            frame = frame_queue.get(timeout=1.0)
+        except queue.Empty:
+            continue
+
 
         # Calculate FPS
         curr_time = time.time()
@@ -182,7 +187,11 @@ def scan_fsm_worker(detection_queue: Queue, mqtt_queue: Queue):
     MQTT_INTERVAL = 0.5  # Giới hạn gửi MQTT mỗi 0.5s (tránh spam)
 
     while True:
-        data = detection_queue.get()
+        try:
+            data = detection_queue.get(timeout=1.0)
+        except queue.Empty:
+            continue
+
         frame_counter = data["counter"]
         now = data["time"]  
 
@@ -252,7 +261,12 @@ def mqtt_worker(mqtt_queue: Queue, mqtt_client, camera_name: str):
 # THREAD 4: SENDER
 # ---------------------
 def sender_worker(sender_frame_queue: Queue, server_address: str, camera_name: str):
-    sender = imagezmq.ImageSender(connect_to=server_address)
+    try:
+        sender.send_image(camera_name, frame)
+    except Exception as e:
+        print("[SENDER ERROR]", e)
+        sender = imagezmq.ImageSender(connect_to=server_address)
+
     print(f"[INFO] Connected to server {server_address}")
 
     while True:
