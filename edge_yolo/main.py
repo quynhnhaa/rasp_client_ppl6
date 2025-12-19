@@ -111,7 +111,8 @@ def on_mqtt_message(client, userdata, msg):
             print(f"[CMD] STOPPED on {CONFIG['camera_name']}")
         elif payload.upper().startswith("TONGTIEN:"):
             money_str = payload.split(":", 1)[1].strip()
-            print(SERVER_MSG = f"TOTAL: {money_str} VND")
+            SERVER_MSG = f"TOTAL: {money_str} VND"
+            print(SERVER_MSG)
 
 # ---------------------
 # FSM
@@ -344,8 +345,12 @@ if __name__ == "__main__":
         mqtt_client.on_connect = on_mqtt_connect
         mqtt_client.on_message = on_mqtt_message
         print(f"[INFO] Connecting MQTT to {MQTT_BROKER}...")
-        mqtt_client.connect_async(MQTT_BROKER, MQTT_PORT, 60)
-        mqtt_client.loop_start()
+        try:
+            mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
+            mqtt_client.loop_start()
+        except Exception as e:
+            print(f"[ERROR] MQTT Connection failed: {e}")
+            print(f"[HINT] Kiểm tra Mosquitto trên Server đã có 'listener 1883' và 'allow_anonymous true' chưa?")
 
     # Threads
     Thread(target=camera_worker, args=(picam2, frame_queue), daemon=True).start()

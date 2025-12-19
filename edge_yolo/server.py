@@ -3,16 +3,64 @@ import json
 import imagezmq
 import traceback
 import paho.mqtt.client as mqtt
+import threading
+import sys
 
 # Cấu hình MQTT
 MQTT_BROKER = "localhost"  # Địa chỉ IP của Broker (thường là máy chạy server này)
 MQTT_PORT = 1883
+
+# Biến toàn cục để chia sẻ trạng thái giữa luồng console và luồng chính
+CURRENT_CAM_NAME = None
+IS_RUNNING = True
+
+def console_worker(mqtt_client):
+    """Luồng xử lý nhập lệnh từ console."""
+    global CURRENT_CAM_NAME, IS_RUNNING
+    print("\n[INFO] Console Control Ready.")
+    print("Commands: 's' (SCAN), 'x' (STOP), 'p [amount]' (PAY), 'q' (QUIT)\n")
+    
+    while IS_RUNNING:
+        try:
+            # input() sẽ block luồng này, nhưng không ảnh hưởng luồng video chính
+            cmd_str = input()
+            if not cmd_str: continue
+            
+            parts = cmd_str.strip().split()
+            cmd = parts[0].lower()
+            
+            if cmd == 'q':
+                IS_RUNNING = False
+                break
+            
+            if not CURRENT_CAM_NAME:
+                print("[WARNING] Chưa có camera kết nối.")
+                continue
+                
+            topic = f"cmd/{CURRENT_CAM_NAME}"
+            
+            if cmd == 's':
+                mqtt_client.publish(topic, "SCAN")
+                print(f"[CMD] Sent SCAN to {topic}")
+            elif cmd == 'x':
+                mqtt_client.publish(topic, "STOP")
+                print(f"[CMD] Sent STOP to {topic}")
+            elif cmd == 'p':
+                amount = parts[1] if len(parts) > 1 else "150000"
+                mqtt_client.publish(topic, f"TONGTIEN: {amount}")
+                print(f"[CMD] Sent PAYMENT: {amount} to {topic}")
+            else:
+                print(f"[INFO] Lệnh không hợp lệ: {cmd}")
+        except Exception as e:
+            print(f"[ERROR] Console: {e}")
 
 def main():
     """
     Khởi chạy server để nhận và hiển thị video stream từ các client.
     Đồng thời đóng vai trò Controller gửi lệnh MQTT (SCAN/STOP/PAYMENT).
     """
+    global CURRENT_CAM_NAME, IS_RUNNING
+
     # 1. Khởi tạo MQTT Client
     mqtt_client = mqtt.Client()
     try:
@@ -29,12 +77,13 @@ def main():
     connected_clients = set()
     display_size = (640, 640)  # Kích thước cửa sổ hiển thị mong muốn
     
-    # Biến lưu tên camera hiện tại để gửi lệnh điều khiển
-    current_cam_name = None
+    # Khởi chạy luồng console
+    t = threading.Thread(target=console_worker, args=(mqtt_client,), daemon=True)
+    t.start()
 
     try:
         # Vòng lặp vô tận để nhận và hiển thị các khung hình
-        while True:
+        while IS_RUNNING:
             # Nhận tên camera và khung hình từ client
             # Lệnh này sẽ block cho đến khi có ảnh mới
             msg, frame = image_hub.recv_image()
@@ -45,7 +94,7 @@ def main():
                 current = data.get("current", {})
                 total = data.get("total", {})
                 
-                current_cam_name = cam_name
+                CURRENT_CAM_NAME = cam_name
             except (json.JSONDecodeError, TypeError):
                 cam_name = msg
 
@@ -58,7 +107,7 @@ def main():
             display_frame = cv2.resize(frame, display_size, interpolation=cv2.INTER_NEAREST)
             
             # Hiển thị hướng dẫn điều khiển
-            cv2.putText(display_frame, "Controls: [S]can [X]Stop [P]ay", (10, 30), 
+            cv2.putText(display_frame, "Console: s(Scan) x(Stop) p(Pay)", (10, 30), 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
             
 
@@ -68,20 +117,8 @@ def main():
             # Chờ 1ms và kiểm tra nếu người dùng nhấn phím 'q' để thoát
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q'):
+                IS_RUNNING = False
                 break
-            elif key == ord('s') and current_cam_name:
-                topic = f"cmd/{current_cam_name}"
-                mqtt_client.publish(topic, "SCAN")
-                print(f"[CMD] Sent SCAN to {topic}")
-            elif key == ord('x') and current_cam_name:
-                topic = f"cmd/{current_cam_name}"
-                mqtt_client.publish(topic, "STOP")
-                print(f"[CMD] Sent STOP to {topic}")
-            elif key == ord('p') and current_cam_name:
-                topic = f"cmd/{current_cam_name}"
-                # Giả lập tính tổng tiền (bạn có thể thay đổi logic tính toán ở đây)
-                mqtt_client.publish(topic, "TONGTIEN: 150000") 
-                print(f"[CMD] Sent PAYMENT to {topic}")
 
             # Gửi tín hiệu 'OK' về cho client để xác nhận đã nhận ảnh
             image_hub.send_reply(b'OK')
