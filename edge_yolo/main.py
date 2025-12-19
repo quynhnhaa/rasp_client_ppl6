@@ -185,13 +185,17 @@ def scan_fsm_worker(detection_queue: Queue, result_queue: Queue):
                 if now - last_seen_time > EMPTY_TIMEOUT:
                     # Điều kiện thoả mãn: Kết thúc đợt -> Chuyển từ "đang quét" sang "đã quét"
                     if current_scanning:
-                        print("[SCAN] END →", current_scanning)
-                        session_total.update(current_scanning)
+                        if len(batch_frame_counters) < 5:
+                            print(f"[SCAN] IGNORED (Too few frames: {len(batch_frame_counters)})")
+                        else:
+                            print("[SCAN] END →", current_scanning)
+                            session_total.update(current_scanning)
+                            
+                            # Tính tổng tiền dựa trên PRICE_MAP đã load
+                            total_money = sum(PRICE_MAP.get(k, 0) * v for k, v in session_total.items())
+                            print(f"[SESSION TOTAL] → {dict(session_total)} | Money: {total_money:,} VND")
+
                         current_scanning = {}
-                        
-                        # Tính tổng tiền dựa trên PRICE_MAP đã load
-                        total_money = sum(PRICE_MAP.get(k, 0) * v for k, v in session_total.items())
-                        print(f"[SESSION TOTAL] → {dict(session_total)} | Money: {total_money:,} VND")
 
                     state = ScanState.IDLE
                     batch_frame_counters = []
