@@ -482,11 +482,43 @@ if __name__ == "__main__":
         print("\n[INFO] Shutting down...")
     
     finally:
+        # 1. Ngắt kết nối MQTT
         if 'mqtt_client' in locals():
             mqtt_client.loop_stop()
+            
+        # 2. Báo hiệu dừng cho tất cả luồng/process
         stop_event.set()
+        
+        # 3. Đóng ZMQ Sender để ngắt các lệnh blocking (nếu có)
+        if 'sender' in locals():
+            try:
+                sender.close()
+            except:
+                pass
+
+        # 4. QUAN TRỌNG: Xả sạch hàng đợi Multiprocessing để tránh Deadlock khi join()
+        # Nếu queue còn đầy, process con sẽ bị treo khi cố gắng flush dữ liệu lúc thoát
+        print("[INFO] Draining queues...")
+        while not result_queue.empty():
+            try: result_queue.get_nowait()
+            except: break
+        while not frame_queue.empty():
+            try: frame_queue.get_nowait()
+            except: break
+
+        # 5. Dừng Process Inference
+        print("[INFO] Joining inference process...")
         inference_proc.join(timeout=3)
         if inference_proc.is_alive():
+            print("[WARNING] Inference process hung, forcing terminate...")
             inference_proc.terminate()
+            
+        # 6. Dừng Camera Thread và giải phóng Camera
+        # Cần join thread trước khi stop camera để tránh xung đột tài nguyên
+        if 'camera_thread' in locals() and camera_thread.is_alive():
+            camera_thread.join(timeout=2)
+            
+        print("[INFO] Stopping camera...")
         picam2.stop()
         print("[INFO] Stopped.")
+        sys.exit(0)
