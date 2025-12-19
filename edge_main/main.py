@@ -66,9 +66,37 @@ MQTT_PORT = 1883
 MQTT_TOPIC = "pbl6/products"
 MQTT_TOPIC_CMD = f"cmd/{CONFIG['camera_name']}"
 IS_SCANNING = False
-LCD_DISPLAY_DURATION = 1.5
+LCD_DISPLAY_DURATION = 3
 
 # ========== Hiển thị trên LCD ==========
+def long_string(display, text='', num_line=1, num_cols=16):
+    """ 
+    Hiển thị chuỗi dài theo kiểu:
+    - Nếu chuỗi ngắn hơn num_cols → in thẳng
+    - Nếu chuỗi dài hơn num_cols → in 16 ký tự đầu, dừng 1s, rồi cuộn từ PHẢI sang TRÁI
+    """
+    row = num_line - 1  # RPLCD dùng index bắt đầu từ 0
+
+    if len(text) > num_cols:
+        # In 16 ký tự đầu tiên trước
+        display.cursor_pos = (row, 0)
+        display.write_string(text[:num_cols].ljust(num_cols))
+        time.sleep(0.6)
+
+        # Thêm khoảng trắng để cuộn mượt
+        scroll_text = text + ' ' * num_cols
+
+        # Cuộn từ phải sang trái
+        for i in range(len(scroll_text) - num_cols + 1):
+            display.cursor_pos = (row, 0)
+            display.write_string(scroll_text[i:i + num_cols])
+            time.sleep(0.2)
+
+        time.sleep(1)
+    else:
+        # Chuỗi ngắn, in thẳng
+        display.cursor_pos = (row, 0)
+        display.write_string(text.ljust(num_cols))
 
 def display_on_lcd(lcd, label, price, quantity):
     if lcd is None:
@@ -94,8 +122,22 @@ def display_on_lcd(lcd, label, price, quantity):
         lcd.cursor_pos = (0, 0)
 
         if len(text) > label_cols:
-            # Cắt chuỗi thay vì scroll để tiết kiệm tài nguyên và tránh blocking
             lcd.write_string(text[:label_cols])
+            sleep_duration = 0.6
+            time.sleep(sleep_duration)
+            time_spent_sleeping += sleep_duration
+
+            scroll_text = text + ' ' * label_cols
+            for i in range(len(scroll_text) - label_cols + 1):
+                lcd.cursor_pos = (0, 0)
+                lcd.write_string(scroll_text[i:i + label_cols])
+                sleep_duration = 0.1
+                time.sleep(sleep_duration)
+                time_spent_sleeping += sleep_duration
+            
+            sleep_duration = 1
+            time.sleep(sleep_duration)
+            time_spent_sleeping += sleep_duration
         else:
             lcd.write_string(text.ljust(label_cols))
 
@@ -167,15 +209,7 @@ def on_mqtt_message(client, userdata, msg):
         price = data.get("price", 0)
         quantity = data.get("quantity", 1)
         if q:
-            try:
-                q.put_nowait((label, price, quantity))
-            except queue.Full:
-                # Drop message cũ để luôn hiển thị cái mới nhất và không phình RAM
-                try:
-                    q.get_nowait()
-                except queue.Empty:
-                    pass
-                q.put_nowait((label, price, quantity))
+            q.put((label, price, quantity))
     except Exception as e:
         print(f"[ERROR] MQTT Message: {e}")
 
@@ -321,13 +355,9 @@ if __name__ == "__main__":
                 "counter": dict(counter),
                 "time": timestamp
             }
-            ok, jpg_buffer = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
-            if ok:
-                sender.send_jpg(json.dumps(msg), jpg_buffer.tobytes())
+            sender.send_image(json.dumps(msg), frame)
             del frame
             del counter
-            del timestamp
-            del jpg_buffer
     except KeyboardInterrupt:
         mqtt_client.loop_stop()
         if lcd: lcd.close(clear=True)
