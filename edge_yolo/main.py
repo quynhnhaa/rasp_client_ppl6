@@ -72,6 +72,28 @@ CONFIG["server_address"] = f"tcp://{CONFIG['server_ip']}:{CONFIG['server_port']}
 price_map_path = os.path.join(project_dir, "product_price.csv")
 PRICE_MAP = load_price_map(price_map_path)
 
+MQTT_TOPIC_CMD = f"cmd/{CONFIG['camera_name']}"
+
+SYSTEM_ACTIVE = False
+SERVER_MSG = "READY"
+
+def on_mqtt_connect(client, userdata, flags, rc):
+    print(f"[MQTT] Connected with result code {rc}")
+    client.subscribe(MQTT_TOPIC_CMD)
+    print(f"[MQTT] Connected. Subscribing to: {MQTT_TOPIC_CMD}")
+
+def on_mqtt_message(client, userdata, msg):
+    global SYSTEM_ACTIVE, SERVER_MSG
+    payload = msg.payload.decode().strip().upper()
+    if payload == "SCAN":
+        SYSTEM_ACTIVE = True
+        SERVER_MSG = "SCANNING..."
+        print("[CMD] SCAN STARTED")
+    elif payload == "STOP":
+        SYSTEM_ACTIVE = False
+        SERVER_MSG = "STOPPED"
+        print("[CMD] SCAN STOPPED")
+
 # ---------------------
 # FSM
 # ---------------------
@@ -96,6 +118,7 @@ def camera_worker(picam2, frame_queue: Queue):
 # THREAD 2: INFERENCE ONLY
 # ---------------------
 def inference_worker(model: YOLO, frame_queue: Queue, detection_queue: Queue, sender_frame_queue: Queue):
+    global SYSTEM_ACTIVE, SERVER_MSG
     prev_time = time.time()
     count_gc = 0
     while True:
@@ -106,22 +129,27 @@ def inference_worker(model: YOLO, frame_queue: Queue, detection_queue: Queue, se
         fps = 1 / (curr_time - prev_time) if (curr_time - prev_time) > 0 else 0
         prev_time = curr_time
 
-        results = model.predict(
-            source=frame,
-            conf=CONFIG["conf_threshold"],
-            iou=CONFIG["nms_threshold"],
-            verbose=False
-        )
-
-        result = results[0]
         frame_counter = Counter()
+        annotated = frame
 
-        if result.boxes is not None and len(result.boxes) > 0:
-            cls_ids = result.boxes.cls.cpu().numpy().astype(int)
-            for cid in cls_ids:
-                frame_counter[result.names[cid]] += 1
+        if SYSTEM_ACTIVE:
+            results = model.predict(
+                source=frame,
+                conf=CONFIG["conf_threshold"],
+                iou=CONFIG["nms_threshold"],
+                verbose=False
+            )
+            result = results[0]
 
-        annotated = result.plot(font_size=0.4, line_width=1)
+            if result.boxes is not None and len(result.boxes) > 0:
+                cls_ids = result.boxes.cls.cpu().numpy().astype(int)
+                for cid in cls_ids:
+                    frame_counter[result.names[cid]] += 1
+            
+            annotated = result.plot(font_size=0.4, line_width=1)
+            del results, result
+        else:
+            cv2.putText(annotated, SERVER_MSG, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
         # Draw FPS
         cv2.putText(annotated, f"FPS: {fps:.1f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
@@ -137,26 +165,25 @@ def inference_worker(model: YOLO, frame_queue: Queue, detection_queue: Queue, se
                 pass
             sender_frame_queue.put_nowait(annotated)
 
-        try:
-            detection_queue.put_nowait({
-                "time": time.time(),
-                "counter": frame_counter
-            })
-        except queue.Full:
+        if SYSTEM_ACTIVE:
             try:
-                detection_queue.get_nowait()
-            except queue.Empty:
-                pass
-            detection_queue.put_nowait({
-                "time": time.time(),
-                "counter": frame_counter
-            })
+                detection_queue.put_nowait({
+                    "time": time.time(),
+                    "counter": frame_counter
+                })
+            except queue.Full:
+                try:
+                    detection_queue.get_nowait()
+                except queue.Empty:
+                    pass
+                detection_queue.put_nowait({
+                    "time": time.time(),
+                    "counter": frame_counter
+                })
 
         # --- GIẢI PHÓNG BỘ NHỚ THỦ CÔNG ---
         # Xóa các biến nặng ngay lập tức để tránh OOM trên Pi Zero 2W
         del frame
-        del results
-        del result
         # annotated đã được put vào queue, sender sẽ lo, ở đây ta xóa tham chiếu cục bộ
         del annotated
         
@@ -180,7 +207,28 @@ def scan_fsm_worker(detection_queue: Queue, mqtt_queue: Queue):
     MQTT_INTERVAL = 0.5  # Giới hạn gửi MQTT mỗi 0.5s (tránh spam)
 
     while True:
-        data = detection_queue.get()
+        # Nếu hệ thống dừng, reset trạng thái FSM
+        if not SYSTEM_ACTIVE:
+            if state != ScanState.IDLE or session_total:
+                state = ScanState.IDLE
+                last_seen_time = 0
+                batch_frame_counters = []
+                session_total = Counter() 
+                current_scanning = {}
+                print("[FSM] Session Reset (STOPPED)")
+            
+            # Xả hàng đợi cũ (nếu có) và ngủ để tiết kiệm CPU
+            while not detection_queue.empty():
+                try: detection_queue.get_nowait()
+                except queue.Empty: break
+            time.sleep(0.1)
+            continue
+
+        try:
+            data = detection_queue.get(timeout=0.1)
+        except queue.Empty:
+            continue
+
         frame_counter = data["counter"]
         now = data["time"]  
 
@@ -208,14 +256,15 @@ def scan_fsm_worker(detection_queue: Queue, mqtt_queue: Queue):
                     # Điều kiện thoả mãn: Kết thúc đợt -> Chuyển từ "đang quét" sang "đã quét"
                     if current_scanning:
                         if len(batch_frame_counters) < 5:
-                            print(f"[SCAN] IGNORED (Too few frames: {len(batch_frame_counters)})")
+                            # print(f"[SCAN] IGNORED (Too few frames: {len(batch_frame_counters)})")
+                            pass
                         else:
-                            print("[SCAN] END →", current_scanning)
+                            # print("[SCAN] END →", current_scanning)
                             session_total.update(current_scanning)
                             
-                            # Tính tổng tiền dựa trên PRICE_MAP đã load
-                            total_money = sum(PRICE_MAP.get(k, 0) * v for k, v in session_total.items())
-                            print(f"[SESSION TOTAL] → {dict(session_total)} | Money: {total_money:,} VND")
+                            # # Tính tổng tiền dựa trên PRICE_MAP đã load
+                            # total_money = sum(PRICE_MAP.get(k, 0) * v for k, v in session_total.items())
+                            # print(f"[SESSION TOTAL] → {dict(session_total)} | Money: {total_money:,} VND")
 
                         current_scanning = {}
 
@@ -229,8 +278,7 @@ def scan_fsm_worker(detection_queue: Queue, mqtt_queue: Queue):
             try:
                 mqtt_queue.put_nowait({
                     "current": current_scanning,
-                    "total": dict(session_total),
-                    "money": total_money
+                    "total": dict(session_total)
                 })
                 last_mqtt_send_time = time.time()
             except queue.Full:
@@ -278,6 +326,8 @@ if __name__ == "__main__":
 
     # MQTT
     mqtt_client = mqtt.Client()
+    mqtt_client.on_connect = on_mqtt_connect
+    mqtt_client.on_message = on_mqtt_message
     try:
         mqtt_client.connect(CONFIG["server_ip"], 1883, 60)
         mqtt_client.loop_start()
