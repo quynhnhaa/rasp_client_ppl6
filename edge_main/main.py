@@ -357,7 +357,8 @@ if __name__ == "__main__":
             }
             ok, jpg_buffer = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
             jpg_buffer_array = np.array(jpg_buffer).tobytes()
-            sender.send_image(json.dumps(msg), jpg_buffer_array)
+            if ok:
+                sender.send_jpg(json.dumps(msg), jpg_buffer_array)
             del frame
             del counter
             del timestamp
