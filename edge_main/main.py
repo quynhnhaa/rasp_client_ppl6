@@ -267,7 +267,7 @@ def inference_worker(model: YOLO, frame_queue: Queue, sender_frame_queue: Queue)
 
             annotated = result.plot(font_size=0.4, line_width=1)
         else:
-            annotated = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            annotated = frame
             cv2.putText(annotated, "STOPPED", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
         # Draw FPS
@@ -275,14 +275,14 @@ def inference_worker(model: YOLO, frame_queue: Queue, sender_frame_queue: Queue)
 
         # SỬA: Dùng put_nowait + try-except để không block
         try:
-            sender_frame_queue.put_nowait((annotated, frame_counter))
+            sender_frame_queue.put_nowait((annotated, frame_counter, curr_time))
         except queue.Full:
             # Drop frame cũ, put frame mới
             try:
                 sender_frame_queue.get_nowait()
             except queue.Empty:
                 pass
-            sender_frame_queue.put_nowait((annotated, frame_counter))
+            sender_frame_queue.put_nowait((annotated, frame_counter, curr_time))
 
         # --- GIẢI PHÓNG BỘ NHỚ THỦ CÔNG ---
         # Xóa các biến nặng ngay lập tức để tránh OOM trên Pi Zero 2W
@@ -349,10 +349,11 @@ if __name__ == "__main__":
 
     try:
         while True:
-            frame, counter = sender_frame_queue.get()
+            frame, counter, timestamp = sender_frame_queue.get()
             msg = {
                 "camera_name": CONFIG["camera_name"],
-                "counter": dict(counter)
+                "counter": dict(counter),
+                "time": timestamp
             }
             sender.send_image(json.dumps(msg), frame)
             del frame
