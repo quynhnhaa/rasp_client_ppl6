@@ -173,7 +173,7 @@ def on_mqtt_message(client, userdata, msg):
 # ---------------------
 def create_sender(server_address):
     """Tạo ImageZMQ sender với PUB-SUB pattern"""
-    sender = imagezmq.ImageSender(connect_to=server_address, REQ_REP=False)
+    sender = imagezmq.ImageSender(connect_to=server_address, REQ_REP=True)
     return sender
 
 # ---------------------
@@ -391,7 +391,7 @@ if __name__ == "__main__":
     # ===== QUAN TRỌNG: Dùng PUB-SUB thay vì REQ-REP =====
     sender = imagezmq.ImageSender(
         connect_to=CONFIG["server_address"],
-        REQ_REP=False  # ← THAY ĐỔI QUAN TRỌNG!
+        REQ_REP=True  # ← THAY ĐỔI QUAN TRỌNG!
     )
     print(f"[INFO] Connected to server (PUB-SUB mode)")
     
