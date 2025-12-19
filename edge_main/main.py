@@ -219,6 +219,7 @@ def on_mqtt_message(client, userdata, msg):
 def camera_worker(picam2, frame_queue: Queue):
     while True:
         frame = picam2.capture_array()
+        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
         try:
             frame_queue.put(frame, timeout=0.1)
         except queue.Full:
