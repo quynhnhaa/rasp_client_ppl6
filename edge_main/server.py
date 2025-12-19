@@ -2,10 +2,54 @@ import cv2
 import imagezmq
 import zmq
 import json
+import time
+import threading
+import random
+import paho.mqtt.client as mqtt
+
+# Config MQTT
+MQTT_BROKER = "localhost"
+MQTT_PORT = 1883
+MQTT_TOPIC_PUB = "pbl6/products"
+
+PRODUCTS = {
+    "Sting": 10000,
+    "Coca": 10000,
+    "Pepsi": 10000,
+    "Water": 5000,
+    "Snack": 8000
+}
+
+def mqtt_publisher():
+    client = mqtt.Client()
+    try:
+        client.connect(MQTT_BROKER, MQTT_PORT, 60)
+        client.loop_start()
+        print(f"[MQTT] Publisher started. Topic: {MQTT_TOPIC_PUB}")
+    except Exception as e:
+        print(f"[MQTT] Connection failed: {e}")
+        return
+
+    while True:
+        time.sleep(5)
+        label = random.choice(list(PRODUCTS.keys()))
+        price = PRODUCTS[label]
+        quantity = random.randint(1, 5)
+        
+        payload = {
+            "label": label,
+            "price": price,
+            "quantity": quantity
+        }
+        try:
+            client.publish(MQTT_TOPIC_PUB, json.dumps(payload))
+            print(f"[MQTT] Sent: {payload}")
+        except Exception as e:
+            print(f"[MQTT] Publish error: {e}")
 
 def main():
     """
-    Server chỉ nhận và hiển thị video stream từ client (KHÔNG MQTT).
+    Server nhận video stream từ client và gửi dữ liệu giả lập qua MQTT mỗi 5s.
     """
 
     # Khởi tạo ImageHub
@@ -14,7 +58,10 @@ def main():
     # Set timeout để không block nếu không có frame
     image_hub.zmq_socket.setsockopt(zmq.RCVTIMEO, 100)
 
-    print("[INFO] Server đang chạy (IMAGE ONLY). Đang chờ client...")
+    print("[INFO] Server đang chạy. Đang chờ client...")
+
+    # Start MQTT Publisher Thread
+    threading.Thread(target=mqtt_publisher, daemon=True).start()
 
     connected_clients = set()
     display_size = (640, 640)  # Kích thước hiển thị

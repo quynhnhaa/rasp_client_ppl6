@@ -9,6 +9,14 @@ from queue import Queue
 import yaml
 from collections import Counter
 
+import paho.mqtt.client as mqtt
+try:
+    from RPLCD.i2c import CharLCD
+    RPLCD_AVAILABLE = True
+except ImportError:
+    RPLCD_AVAILABLE = False
+    print("[WARNING] RPLCD library not found.")
+
 # ---------------------
 # ENV
 # ---------------------
@@ -49,6 +57,149 @@ metadata_path = os.path.join(project_dir, CONFIG["model_name"], "metadata.yaml")
 CONFIG["camera_resolution"] = load_class_names_from_yaml(metadata_path)
 CONFIG["server_address"] = f"tcp://{CONFIG['server_ip']}:{CONFIG['server_port']}"
 del metadata_path
+
+# ---------------------
+# MQTT & LCD CONFIG
+# ---------------------
+MQTT_BROKER= "broker.hivemq.com"
+MQTT_PORT = 1883
+MQTT_TOPIC = "pbl6/products"
+LCD_DISPLAY_DURATION = 3
+
+# ========== Hiển thị trên LCD ==========
+def long_string(display, text='', num_line=1, num_cols=16):
+    """ 
+    Hiển thị chuỗi dài theo kiểu:
+    - Nếu chuỗi ngắn hơn num_cols → in thẳng
+    - Nếu chuỗi dài hơn num_cols → in 16 ký tự đầu, dừng 1s, rồi cuộn từ PHẢI sang TRÁI
+    """
+    row = num_line - 1  # RPLCD dùng index bắt đầu từ 0
+
+    if len(text) > num_cols:
+        # In 16 ký tự đầu tiên trước
+        display.cursor_pos = (row, 0)
+        display.write_string(text[:num_cols].ljust(num_cols))
+        time.sleep(0.6)
+
+        # Thêm khoảng trắng để cuộn mượt
+        scroll_text = text + ' ' * num_cols
+
+        # Cuộn từ phải sang trái
+        for i in range(len(scroll_text) - num_cols + 1):
+            display.cursor_pos = (row, 0)
+            display.write_string(scroll_text[i:i + num_cols])
+            time.sleep(0.2)
+
+        time.sleep(1)
+    else:
+        # Chuỗi ngắn, in thẳng
+        display.cursor_pos = (row, 0)
+        display.write_string(text.ljust(num_cols))
+
+def display_on_lcd(lcd, label, price, quantity):
+    if lcd is None:
+        return 0
+
+    time_spent_sleeping = 0
+    try:
+        # ========== Line 2: Total: {giá tiền} ==========
+        lcd.cursor_pos = (1, 0)
+        total_price = price * quantity if quantity > 1 else price
+        price_str = f"{total_price:,.0f}VND"
+        lcd.write_string(price_str.rjust(16)[:16])
+        
+        # ========== Line 1: <label> x<quantity> ==========
+        quantity_str = f" x{quantity}" if quantity > 1 else ""
+        quantity_len = len(quantity_str)
+        label_cols = 16 - quantity_len
+
+        lcd.cursor_pos = (0, label_cols)
+        lcd.write_string(quantity_str)
+
+        text = str(label)
+        lcd.cursor_pos = (0, 0)
+
+        if len(text) > label_cols:
+            lcd.write_string(text[:label_cols])
+            sleep_duration = 0.6
+            time.sleep(sleep_duration)
+            time_spent_sleeping += sleep_duration
+
+            scroll_text = text + ' ' * label_cols
+            for i in range(len(scroll_text) - label_cols + 1):
+                lcd.cursor_pos = (0, 0)
+                lcd.write_string(scroll_text[i:i + label_cols])
+                sleep_duration = 0.2
+                time.sleep(sleep_duration)
+                time_spent_sleeping += sleep_duration
+            
+            sleep_duration = 1
+            time.sleep(sleep_duration)
+            time_spent_sleeping += sleep_duration
+        else:
+            lcd.write_string(text.ljust(label_cols))
+
+    except Exception as e:
+        print(f"[ERROR] Could not write to LCD: {e}")
+    
+    return time_spent_sleeping
+
+def lcd_worker(q, lcd_obj):
+    # Clear screen once at the start
+    if lcd_obj:
+        lcd_obj.clear()
+    # Loop to process incoming messages
+    while True:
+        item = q.get()
+        if item == (None, None, None):  # Sentinel for shutdown
+            break
+        label, price, quantity = item
+        
+        # Display item
+        time_spent_scrolling = display_on_lcd(lcd_obj, label, price, quantity)
+        
+        # Wait for the rest of the duration
+        remaining_sleep = LCD_DISPLAY_DURATION - time_spent_scrolling
+        if remaining_sleep > 0:
+            time.sleep(remaining_sleep)
+
+        # Clear screen after displaying
+        if lcd_obj:
+            lcd_obj.clear()
+            
+    print("[INFO] LCD worker stopped.")
+
+def init_lcd():
+    if not RPLCD_AVAILABLE: return None
+    try:
+        lcd = CharLCD('PCF8574', 0x27)
+        lcd.clear()
+        lcd.write_string("Waiting for...")
+        print(f"[INFO] LCD initialized at address {hex(0x27)}.")
+        return lcd
+    except Exception:
+        print("[ERROR] Could not initialize LCD.")
+        return None
+
+def on_mqtt_connect(client, userdata, flags, rc):
+    if rc == 0:
+        print(f"[MQTT] Connected. Subscribing to {MQTT_TOPIC}")
+        client.subscribe(MQTT_TOPIC)
+    else:
+        print(f"[MQTT] Failed to connect, return code {rc}")
+
+def on_mqtt_message(client, userdata, msg):
+    q = userdata.get('queue')
+    try:
+        data = json.loads(msg.payload.decode())
+        label = data.get("label", "N/A")
+        price = data.get("price", 0)
+        quantity = data.get("quantity", 1)
+        if q:
+            q.put((label, price, quantity))
+    except Exception as e:
+        print(f"[ERROR] MQTT Message: {e}")
+
 # ---------------------
 # THREAD 1: CAMERA
 # ---------------------
@@ -145,6 +296,21 @@ if __name__ == "__main__":
     # Model
     model = YOLO(CONFIG["model_name"], task="detect")
 
+    # LCD & MQTT Setup
+    lcd_queue = Queue()
+    lcd = init_lcd()
+    Thread(target=lcd_worker, args=(lcd_queue, lcd), daemon=True).start()
+
+    mqtt_client = mqtt.Client()
+    mqtt_client.user_data_set({'queue': lcd_queue})
+    mqtt_client.on_connect = on_mqtt_connect
+    mqtt_client.on_message = on_mqtt_message
+    try:
+        mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
+        mqtt_client.loop_start()
+    except Exception as e:
+        print(f"[ERROR] MQTT Connection: {e}")
+
     # Queues
     frame_queue = Queue(maxsize=CONFIG["queue_size"])
     sender_frame_queue = Queue(maxsize=CONFIG["queue_size"])
@@ -169,5 +335,7 @@ if __name__ == "__main__":
             del frame
             del counter
     except KeyboardInterrupt:
+        mqtt_client.loop_stop()
+        if lcd: lcd.close(clear=True)
         picam2.stop()
         print("\n[INFO] Stopped.")
