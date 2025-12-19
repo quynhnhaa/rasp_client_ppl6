@@ -368,6 +368,26 @@ if __name__ == "__main__":
     frame_queue = MPQueue(maxsize=3)
     result_queue = MPQueue(maxsize=3)
     
+    # LCD Setup
+    lcd_queue = queue.Queue(maxsize=3)
+    lcd = init_lcd()
+    Thread(target=lcd_worker, args=(lcd_queue, lcd), daemon=True).start()
+
+    # MQTT Setup
+    mqtt_client = mqtt.Client()
+    mqtt_client.user_data_set({
+        'scanning_event': scanning_event,
+        'lcd_queue': lcd_queue
+    })
+    mqtt_client.on_connect = on_mqtt_connect
+    mqtt_client.on_message = on_mqtt_message
+    
+    try:
+        mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
+        mqtt_client.loop_start()
+    except Exception as e:
+        print(f"[ERROR] MQTT Connection: {e}")
+
     # Config
     model_config = {
         "resolution": CONFIG["camera_resolution"],
@@ -462,6 +482,8 @@ if __name__ == "__main__":
         print("\n[INFO] Shutting down...")
     
     finally:
+        if 'mqtt_client' in locals():
+            mqtt_client.loop_stop()
         stop_event.set()
         inference_proc.join(timeout=3)
         if inference_proc.is_alive():
