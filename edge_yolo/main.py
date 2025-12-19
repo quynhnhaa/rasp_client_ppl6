@@ -1,5 +1,6 @@
 import os
 import json
+import csv
 import gc
 import time
 import queue
@@ -33,6 +34,23 @@ def load_class_names_from_yaml(metadata_path):
         print("[ERROR] Metadata:", e)
         return ["product"], (320, 320)
 
+def load_price_map(file_path):
+    price_map = {}
+    try:
+        with open(file_path, mode='r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                label = row.get('label', '').strip()
+                price_str = row.get('price', '0').strip()
+                if label and price_str:
+                    try:
+                        price_map[label] = int(price_str)
+                    except ValueError:
+                        pass
+    except Exception as e:
+        print(f"[ERROR] Loading prices: {e}")
+    return price_map
+
 # ---------------------
 # CONFIG
 # ---------------------
@@ -49,6 +67,9 @@ CONFIG = {
 metadata_path = os.path.join(project_dir, CONFIG["model_name"], "metadata.yaml")
 CONFIG["class_names"], CONFIG["camera_resolution"] = load_class_names_from_yaml(metadata_path)
 CONFIG["server_address"] = f"tcp://{CONFIG['server_ip']}:{CONFIG['server_port']}"
+
+price_map_path = os.path.join(project_dir, "product_price.csv")
+PRICE_MAP = load_price_map(price_map_path)
 
 # ---------------------
 # FSM
@@ -102,7 +123,7 @@ def inference_worker(model: YOLO, frame_queue: Queue, detection_queue: Queue, se
         annotated = result.plot(font_size=0.4, line_width=1)
 
         # Draw FPS
-        cv2.putText(annotated, f"FPS: {fps:.1f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 1)
+        cv2.putText(annotated, f"FPS: {fps:.1f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
 
         # Đẩy frame trực tiếp cho Sender
         sender_frame_queue.put(annotated)
@@ -167,7 +188,10 @@ def scan_fsm_worker(detection_queue: Queue, result_queue: Queue):
                         print("[SCAN] END →", current_scanning)
                         session_total.update(current_scanning)
                         current_scanning = {}
-                        print("[SESSION TOTAL] →", dict(session_total))
+                        
+                        # Tính tổng tiền dựa trên PRICE_MAP đã load
+                        total_money = sum(PRICE_MAP.get(k, 0) * v for k, v in session_total.items())
+                        print(f"[SESSION TOTAL] → {dict(session_total)} | Money: {total_money:,} VND")
 
                     state = ScanState.IDLE
                     batch_frame_counters = []
