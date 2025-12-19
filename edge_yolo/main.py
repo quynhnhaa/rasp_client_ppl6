@@ -154,7 +154,7 @@ def inference_worker(model: YOLO, frame_queue: Queue, detection_queue: Queue, se
         # Draw FPS
         cv2.putText(annotated, f"FPS: {fps:.1f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
 
-        # SỬA: Dùng put_nowait + try-except để không block
+        # [AN TOÀN] Đẩy frame vào sender queue
         try:
             sender_frame_queue.put_nowait(annotated)
         except queue.Full:
@@ -163,7 +163,10 @@ def inference_worker(model: YOLO, frame_queue: Queue, detection_queue: Queue, se
                 sender_frame_queue.get_nowait()
             except queue.Empty:
                 pass
-            sender_frame_queue.put_nowait(annotated)
+            try:
+                sender_frame_queue.put_nowait(annotated)
+            except queue.Full:
+                pass # Nếu vẫn full thì chấp nhận drop frame này, không để crash thread
 
         if SYSTEM_ACTIVE:
             try:
@@ -176,10 +179,13 @@ def inference_worker(model: YOLO, frame_queue: Queue, detection_queue: Queue, se
                     detection_queue.get_nowait()
                 except queue.Empty:
                     pass
-                detection_queue.put_nowait({
-                    "time": time.time(),
-                    "counter": frame_counter
-                })
+                try:
+                    detection_queue.put_nowait({
+                        "time": time.time(),
+                        "counter": frame_counter
+                    })
+                except queue.Full:
+                    pass # Drop data nếu FSM xử lý không kịp
 
         # --- GIẢI PHÓNG BỘ NHỚ THỦ CÔNG ---
         # Xóa các biến nặng ngay lập tức để tránh OOM trên Pi Zero 2W
@@ -302,8 +308,11 @@ def sender_worker(sender_frame_queue: Queue, server_address: str, camera_name: s
 
     while True:
         # Chỉ lấy frame từ sender_frame_queue và gửi đi ngay lập tức
-        frame = sender_frame_queue.get()
-        sender.send_image(camera_name, frame)
+        try:
+            frame = sender_frame_queue.get()
+            sender.send_image(camera_name, frame)
+        except Exception as e:
+            print(f"[WARNING] Sender Error: {e}")
 
 # ---------------------
 # MAIN
