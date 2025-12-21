@@ -5,7 +5,7 @@ import time
 import json
 import queue
 from threading import Thread
-from multiprocessing import Process, Queue as MPQueue, Event
+from multiprocessing import Process, Queue as MPQueue, Event, Value
 import yaml
 from collections import Counter
 import numpy as np
@@ -200,13 +200,14 @@ def safe_queue_get(q, timeout=0.1):
 # ---------------------
 # CAMERA WORKER (đã sửa)
 # ---------------------
-def camera_worker(picam2, frame_queue: MPQueue, stop_event: Event):
+def camera_worker(picam2, frame_queue: MPQueue, stop_event: Event, cam_heartbeat: Value):
     print("[CAMERA] Worker started.")
     frame_count = 0
     
     while not stop_event.is_set():
         try:
             frame = picam2.capture_array()
+            cam_heartbeat.value = time.time()  # Cập nhật nhịp tim camera
             
             # Non-blocking put với drop policy
             if not safe_queue_put(frame_queue, frame):
@@ -360,6 +361,9 @@ if __name__ == "__main__":
     frame_queue = MPQueue(maxsize=1)
     result_queue = MPQueue(maxsize=1)
     
+    # Shared Value để theo dõi trạng thái Camera
+    cam_heartbeat = Value('d', time.time())
+    
     # LCD Setup
     lcd_queue = queue.Queue(maxsize=3)
     lcd = init_lcd()
@@ -390,7 +394,7 @@ if __name__ == "__main__":
     # Start workers
     camera_thread = Thread(
         target=camera_worker,
-        args=(picam2, frame_queue, stop_event),
+        args=(picam2, frame_queue, stop_event, cam_heartbeat),
         daemon=True
     )
     camera_thread.start()
@@ -433,7 +437,7 @@ if __name__ == "__main__":
                 msg = {
                     "camera_name": CONFIG["camera_name"],
                     "counter": counter,
-                    "time": timestamp
+                    "time": last_frame_time
                 }
                 
                 # Send (non-blocking với PUB-SUB)
@@ -450,7 +454,6 @@ if __name__ == "__main__":
                 if time.time() - last_frame_time > watchdog_timeout:
                     print(f"[WARNING] No frame for {watchdog_timeout}s!")
                     last_frame_time = time.time()
-                    
                     # Kiểm tra inference process còn sống không
                     if not inference_proc.is_alive():
                         print("[ERROR] Inference process died! Restarting...")
@@ -466,6 +469,13 @@ if __name__ == "__main__":
                             )
                         )
                         inference_proc.start()
+                    else:
+                        # Chẩn đoán nguyên nhân
+                        cam_lag = time.time() - cam_heartbeat.value
+                        if cam_lag > watchdog_timeout:
+                            print(f"[ERROR] Camera thread bị treo! (Không chụp ảnh trong {cam_lag:.1f}s)")
+                        else:
+                            print(f"[WARNING] Camera vẫn chạy (lag {cam_lag:.1f}s) -> Có thể Inference bị treo hoặc quá chậm.")
     
     except KeyboardInterrupt:
         print("\n[INFO] Shutting down...")
