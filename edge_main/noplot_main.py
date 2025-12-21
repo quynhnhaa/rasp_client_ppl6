@@ -275,6 +275,7 @@ def inference_process(model_name: str,model_config: dict,frame_queue: MPQueue,
         
         # ===== Inference =====
         frame_counter = Counter()
+        detections = []
         is_scanning = scanning_event.is_set()
         
         try:
@@ -288,35 +289,37 @@ def inference_process(model_name: str,model_config: dict,frame_queue: MPQueue,
                 result = results[0]
                 
                 if result.boxes is not None and len(result.boxes) > 0:
+                    boxes = result.boxes.xyxy.cpu().numpy()
+                    confs = result.boxes.conf.cpu().numpy()
                     cls_ids = result.boxes.cls.cpu().numpy().astype(int)
-                    for cid in cls_ids:
-                        frame_counter[result.names[cid]] += 1
-                    del cls_ids
+                    
+                    for i, cid in enumerate(cls_ids):
+                        label = result.names[cid]
+                        frame_counter[label] += 1
+                        detections.append({
+                            "box": boxes[i].tolist(),
+                            "label": label,
+                            "conf": float(confs[i])
+                        })
+                    del cls_ids, boxes, confs
                 
-                annotated = result.plot(font_size=0.4, line_width=1)
-                del result, results
-            else:
-                annotated = frame.copy()
                 # annotated = frame
-                cv2.putText(annotated, "STOPPED", (10, 60),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+                del result, results
+            # else:
+            #     annotated = frame
         except Exception as e:
             print(f"[ERROR] Inference: {e}")
-            annotated = frame
+            # annotated = frame
         
-        del frame
-        
-        # ===== Draw FPS =====
-        cv2.putText(annotated, f"FPS: {fps:.1f}", (10, 30),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
+        # del frame
         
         # ===== Put result (non-blocking) =====
-        result_data = (annotated, dict(frame_counter), curr_time)
+        result_data = (frame, dict(frame_counter), detections, curr_time)
         safe_queue_put(result_queue, result_data)
         
         # ===== Cleanup =====
-        del annotated, frame_counter
-        
+        # del annotated, frame_counter
+        del frame, frame_counter
         gc_counter += 1
         if gc_counter >= 30:
             gc.collect()
@@ -357,8 +360,8 @@ if __name__ == "__main__":
     picam2.start()
     
     # Queues 
-    frame_queue = MPQueue(maxsize=1)
-    result_queue = MPQueue(maxsize=1)
+    frame_queue = MPQueue(maxsize=2)
+    result_queue = MPQueue(maxsize=2)
     
     # LCD Setup
     lcd_queue = queue.Queue(maxsize=3)
@@ -427,12 +430,13 @@ if __name__ == "__main__":
             data, ok = safe_queue_get(result_queue, timeout=1.0)
             
             if ok:
-                frame, counter, timestamp = data
+                frame, counter, detections, timestamp = data
                 last_frame_time = time.time()
                 
                 msg = {
                     "camera_name": CONFIG["camera_name"],
                     "counter": counter,
+                    "detections": detections,
                     "time": timestamp
                 }
                 
@@ -444,7 +448,7 @@ if __name__ == "__main__":
                 except Exception as e:
                     print(f"[ERROR] Send: {e}")
                 
-                del frame, counter, timestamp, data
+                del frame, counter, detections, timestamp, data
             else:
                 # Watchdog: kiểm tra timeout
                 if time.time() - last_frame_time > watchdog_timeout:
