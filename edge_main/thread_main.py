@@ -320,7 +320,7 @@ def inference_worker(model: YOLO, frame_queue: Queue, sender_frame_queue: Queue)
         if current_time - last_memory_check > 5:
             mem = get_memory_usage()
             if mem['percent'] > 80:
-                print(f"[WARNING] High memory: {mem['percent']:.1f}% ({mem['available_mb']:.0f}MB free)")
+                # print(f"[WARNING] High memory: {mem['percent']:.1f}% ({mem['available_mb']:.0f}MB free)")
                 emergency_memory_cleanup()
             if mem['percent'] > 90:
                 print(f"[CRITICAL] Memory critical: {mem['percent']:.1f}%")
