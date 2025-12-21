@@ -296,8 +296,8 @@ def inference_process(model_name: str,model_config: dict,frame_queue: MPQueue,
                 annotated = result.plot(font_size=0.4, line_width=1)
                 del result, results
             else:
-                # annotated = frame.copy()
-                annotated = frame
+                annotated = frame.copy()
+                # annotated = frame
                 cv2.putText(frame, "STOPPED", (10, 60),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
         except Exception as e:
@@ -353,8 +353,8 @@ if __name__ == "__main__":
     picam2.start()
     
     # Queues 
-    frame_queue = MPQueue(maxsize=3)
-    result_queue = MPQueue(maxsize=3)
+    frame_queue = MPQueue(maxsize=2)
+    result_queue = MPQueue(maxsize=2)
     
     # LCD Setup
     lcd_queue = queue.Queue(maxsize=3)
