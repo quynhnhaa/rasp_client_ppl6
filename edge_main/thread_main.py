@@ -358,28 +358,45 @@ def inference_worker(model: YOLO, frame_queue: Queue, sender_frame_queue: Queue)
                 )
                 result = results[0]
 
-                if result.boxes is not None and len(result.boxes) > 0:
-                    cls_ids = result.boxes.cls.cpu().numpy().astype(int)
-                    for cid in cls_ids:
-                        frame_counter[result.names[cid]] += 1
+                # Vẽ trực tiếp lên frame để tiết kiệm RAM (tránh tạo bản copy)
+                annotated = frame
 
-                # Plot với kích thước nhỏ hơn để tiết kiệm memory
-                annotated = result.plot(font_size=0.4, line_width=1)
+                if result.boxes is not None and len(result.boxes) > 0:
+                    boxes = result.boxes.xyxy.cpu().numpy().astype(int)
+                    cls_ids = result.boxes.cls.cpu().numpy().astype(int)
+                    confs = result.boxes.conf.cpu().numpy()
+                    
+                    for i in range(len(boxes)):
+                        x1, y1, x2, y2 = boxes[i]
+                        cls_id = cls_ids[i]
+                        conf = confs[i]
+                        label = result.names[cls_id]
+                        
+                        frame_counter[label] += 1
+                        
+                        # Vẽ Bounding Box & Label thủ công
+                        cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                        
+                        text = f"{label} {conf:.2f}"
+                        (w, h), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
+                        cv2.rectangle(annotated, (x1, y1 - 15), (x1 + w, y1), (0, 255, 0), -1)
+                        cv2.putText(annotated, text, (x1, y1 - 5), 
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1)
+                    
+                    del boxes, cls_ids, confs
                 
                 # QUAN TRỌNG: Giải phóng ngay lập tức
                 del results
                 del result
-                if 'cls_ids' in dir():
-                    del cls_ids
                     
             except Exception as e:
                 print(f"[ERROR] Inference: {e}")
-                annotated = frame.copy()
+                annotated = frame
                 cv2.putText(annotated, "ERROR", (10, 60), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
         else:
             # Không scan - chỉ copy frame và vẽ text
-            annotated = frame.copy()
+            annotated = frame
             cv2.putText(annotated, "STOPPED", (10, 60), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
