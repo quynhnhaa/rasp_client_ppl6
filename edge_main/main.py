@@ -340,6 +340,10 @@ if __name__ == "__main__":
     stop_event = Event()
 
     def signal_handler(sig, frame):
+        # Cho phép bấm Ctrl+C lần 2 để force exit nếu bị treo
+        if stop_event.is_set():
+            print("\n[INFO] Force exit triggered...")
+            os._exit(1)
         print("\n[INFO] Ctrl+C detected. Stopping...")
         stop_event.set()
     signal.signal(signal.SIGINT, signal_handler)
@@ -502,8 +506,15 @@ if __name__ == "__main__":
         # Cần join thread trước khi stop camera để tránh xung đột tài nguyên
         if 'camera_thread' in locals() and camera_thread.is_alive():
             camera_thread.join(timeout=2)
+            # Nếu thread vẫn còn sống (kẹt trong capture), thoát ngay để tránh deadlock tại picam2.stop()
+            if camera_thread.is_alive():
+                print("[WARNING] Camera thread stuck. Force exiting...")
+                os._exit(0)
             
         print("[INFO] Stopping camera...")
-        picam2.stop()
+        try:
+            picam2.stop()
+        except:
+            pass
         print("[INFO] Stopped.")
         os._exit(0)
