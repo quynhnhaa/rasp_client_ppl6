@@ -1,5 +1,4 @@
 import os
-import csv
 import gc
 import time
 import json
@@ -31,10 +30,18 @@ import imagezmq
 import cv2
 
 # ---------------------
+# MEMORY CONSTANTS - Điều chỉnh cho Pi Zero 2W
+# ---------------------
+MEMORY_WARNING_THRESHOLD = 70      # Cảnh báo sớm hơn
+MEMORY_CRITICAL_THRESHOLD = 78     # Dừng scan sớm hơn
+MEMORY_EMERGENCY_THRESHOLD = 85    # Dừng hoàn toàn
+MIN_FREE_MB_FOR_INFERENCE = 100    # Cần ít nhất 100MB free để chạy inference
+
+# ---------------------
 # MEMORY MONITORING
 # ---------------------
 def get_memory_usage():
-    """Đọc memory usage từ /proc/meminfo (không cần psutil)"""
+    """Đọc memory usage từ /proc/meminfo"""
     try:
         with open('/proc/meminfo', 'r') as f:
             lines = f.readlines()
@@ -57,13 +64,28 @@ def get_memory_usage():
             'percent': percent
         }
     except:
-        return {'percent': 0, 'available_mb': 999}
+        return {'percent': 0, 'available_mb': 999, 'total_mb': 512, 'used_mb': 0}
 
-def emergency_memory_cleanup():
-    """Dọn dẹp khẩn cấp khi memory cao"""
+def aggressive_memory_cleanup():
+    """Dọn dẹp memory mạnh mẽ"""
     gc.collect()
-    gc.collect()  # Gọi 2 lần để dọn circular references
-    time.sleep(0.1)
+    gc.collect()
+    gc.collect()
+    
+    # Cố gắng giải phóng memory cho kernel
+    try:
+        with open('/proc/sys/vm/drop_caches', 'w') as f:
+            f.write('1')
+    except:
+        pass  # Cần quyền root, bỏ qua nếu không có
+    
+    time.sleep(0.2)
+
+def can_run_inference():
+    """Kiểm tra có đủ RAM để chạy inference không"""
+    mem = get_memory_usage()
+    return (mem['available_mb'] >= MIN_FREE_MB_FOR_INFERENCE and 
+            mem['percent'] < MEMORY_CRITICAL_THRESHOLD)
 
 # ---------------------
 # THREAD-SAFE SCAN STATE
@@ -73,29 +95,45 @@ class ScanStateManager:
         self._is_scanning = False
         self._lock = Lock()
         self._last_change_time = 0
-        self._min_interval = 0.5  # Tối thiểu 0.5s giữa các lần đổi trạng thái
+        self._min_interval = 1.0  # Tăng lên 1 giây
+        self._paused_by_memory = False
     
     @property
     def is_scanning(self):
         with self._lock:
-            return self._is_scanning
+            return self._is_scanning and not self._paused_by_memory
+    
+    @property
+    def is_paused(self):
+        with self._lock:
+            return self._paused_by_memory
     
     def set_scanning(self, value: bool) -> bool:
-        """Set trạng thái, return True nếu thành công"""
         current_time = time.time()
         with self._lock:
-            # Rate limiting - không cho đổi quá nhanh
             if current_time - self._last_change_time < self._min_interval:
-                print(f"[WARNING] State change too fast, ignored")
                 return False
             
             if self._is_scanning != value:
                 self._is_scanning = value
                 self._last_change_time = current_time
-                # Force GC khi đổi trạng thái
-                gc.collect()
+                self._paused_by_memory = False
                 return True
             return False
+    
+    def pause_for_memory(self):
+        """Tạm dừng do thiếu RAM"""
+        with self._lock:
+            if not self._paused_by_memory:
+                self._paused_by_memory = True
+                print("[MEMORY] Inference paused - low memory")
+    
+    def resume_from_pause(self):
+        """Tiếp tục sau khi có đủ RAM"""
+        with self._lock:
+            if self._paused_by_memory:
+                self._paused_by_memory = False
+                print("[MEMORY] Inference resumed")
 
 scan_state = ScanStateManager()
 
@@ -138,14 +176,13 @@ MQTT_TOPIC = "pbl6/products"
 MQTT_TOPIC_CMD = f"cmd/{CONFIG['camera_name']}"
 LCD_DISPLAY_DURATION = 1.5
 
-# Shutdown event for graceful exit
 shutdown_event = Event()
 
 # ========== LCD Functions ==========
 
 def display_on_lcd(lcd, label, price, quantity):
     if lcd is None:
-        return 0
+        return
     try:
         lcd.cursor_pos = (1, 0)
         total_price = price * quantity if quantity > 1 else price
@@ -168,7 +205,6 @@ def display_on_lcd(lcd, label, price, quantity):
             lcd.write_string(text.ljust(label_cols))
     except Exception as e:
         print(f"[ERROR] LCD: {e}")
-    return 0
 
 def lcd_worker(q, lcd_obj):
     if lcd_obj:
@@ -198,8 +234,7 @@ def init_lcd():
     try:
         lcd = CharLCD('PCF8574', 0x27)
         lcd.clear()
-        lcd.write_string("Waiting for...")
-        print(f"[INFO] LCD initialized.")
+        lcd.write_string("Waiting...")
         return lcd
     except Exception:
         print("[ERROR] Could not initialize LCD.")
@@ -209,24 +244,24 @@ def init_lcd():
 
 def on_mqtt_connect(client, userdata, flags, rc):
     if rc == 0:
-        print(f"[MQTT] Connected. Subscribing...")
+        print(f"[MQTT] Connected")
         client.subscribe([(MQTT_TOPIC, 0), (MQTT_TOPIC_CMD, 0)])
     else:
-        print(f"[MQTT] Failed to connect, rc={rc}")
+        print(f"[MQTT] Failed, rc={rc}")
 
 def on_mqtt_message(client, userdata, msg):
     if msg.topic == MQTT_TOPIC_CMD:
         payload = msg.payload.decode().strip().upper()
         if payload == "SCAN":
-            if scan_state.set_scanning(True):
-                print("[CMD] SCAN STARTED")
+            # Kiểm tra memory trước khi cho phép scan
+            if can_run_inference():
+                if scan_state.set_scanning(True):
+                    print("[CMD] SCAN STARTED")
             else:
-                print("[CMD] SCAN ignored (rate limited)")
+                print("[CMD] SCAN DENIED - insufficient memory")
         elif payload == "STOP":
             if scan_state.set_scanning(False):
                 print("[CMD] SCAN STOPPED")
-            else:
-                print("[CMD] STOP ignored (rate limited)")
         return
 
     q = userdata.get('queue')
@@ -245,18 +280,16 @@ def on_mqtt_message(client, userdata, msg):
                     pass
                 q.put_nowait((label, price, quantity))
     except Exception as e:
-        print(f"[ERROR] MQTT Message: {e}")
+        print(f"[ERROR] MQTT: {e}")
 
 def on_mqtt_disconnect(client, userdata, rc):
-    print(f"[MQTT] Disconnected (rc={rc})")
-    if not shutdown_event.is_set():
-        print("[MQTT] Attempting reconnect...")
+    if not shutdown_event.is_set() and rc != 0:
+        print(f"[MQTT] Disconnected, reconnecting...")
         while not shutdown_event.is_set():
             try:
                 client.reconnect()
-                print("[MQTT] Reconnected!")
                 break
-            except Exception:
+            except:
                 time.sleep(5)
 
 # ---------------------
@@ -264,75 +297,83 @@ def on_mqtt_disconnect(client, userdata, rc):
 # ---------------------
 def camera_worker(picam2, frame_queue: Queue):
     print("[INFO] Camera worker started")
-    consecutive_errors = 0
     
     while not shutdown_event.is_set():
         try:
             frame = picam2.capture_array()
             try:
-                frame_queue.put(frame, timeout=0.1)
+                frame_queue.put(frame, timeout=0.05)
             except queue.Full:
-                del frame  # Quan trọng: giải phóng frame nếu queue đầy
-            consecutive_errors = 0
+                del frame
         except Exception as e:
-            consecutive_errors += 1
             print(f"[ERROR] Camera: {e}")
-            if consecutive_errors > 10:
-                print("[FATAL] Too many camera errors, stopping")
-                shutdown_event.set()
-                break
             time.sleep(0.5)
     
     print("[INFO] Camera worker stopped")
 
 # ---------------------
-# THREAD: INFERENCE (SỬA LỖI CHÍNH)
+# THREAD: INFERENCE - TỐI ƯU CHO PI ZERO 2W
 # ---------------------
 def inference_worker(model: YOLO, frame_queue: Queue, sender_frame_queue: Queue):
     print("[INFO] Inference worker started")
     
     prev_time = time.time()
     frame_count = 0
-    last_gc_time = time.time()
     last_memory_check = time.time()
+    consecutive_skips = 0
     
-    # Warmup model
+    # Pre-create stopped frame text
+    stopped_text = "STOPPED"
+    paused_text = "PAUSED-MEM"
+    
+    # Warmup với memory check
+    print("[INFO] Warming up model...")
+    mem_before = get_memory_usage()
+    print(f"[INFO] Memory before warmup: {mem_before['percent']:.1f}%")
+    
     dummy = np.zeros(
         (CONFIG["camera_resolution"][1], CONFIG["camera_resolution"][0], 3),
         dtype=np.uint8
     )
-    model.predict(
-        source=dummy,
-        conf=CONFIG["conf_threshold"],
-        iou=CONFIG["nms_threshold"],
-        verbose=False
-    )
+    model.predict(source=dummy, conf=CONFIG["conf_threshold"], 
+                  iou=CONFIG["nms_threshold"], verbose=False)
     del dummy
-    gc.collect()
+    
+    # Force cleanup sau warmup
+    aggressive_memory_cleanup()
+    
+    mem_after = get_memory_usage()
+    print(f"[INFO] Memory after warmup: {mem_after['percent']:.1f}%")
     print("[INFO] Model warmup complete")
     
-    # Pre-allocate reusable objects
-    empty_counter = Counter()
-    
     while not shutdown_event.is_set():
-        # ===== MEMORY CHECK (mỗi 5 giây) =====
         current_time = time.time()
-        if current_time - last_memory_check > 5:
+        
+        # ===== MEMORY CHECK - Mỗi 2 giây =====
+        if current_time - last_memory_check > 2.0:
             mem = get_memory_usage()
-            if mem['percent'] > 80:
-                # print(f"[WARNING] High memory: {mem['percent']:.1f}% ({mem['available_mb']:.0f}MB free)")
-                emergency_memory_cleanup()
-            if mem['percent'] > 90:
-                print(f"[CRITICAL] Memory critical: {mem['percent']:.1f}%")
-                # Tạm dừng scan để giải phóng memory
-                scan_state.set_scanning(False)
-                emergency_memory_cleanup()
-                time.sleep(1)
             last_memory_check = current_time
+            
+            if mem['percent'] > MEMORY_EMERGENCY_THRESHOLD:
+                print(f"[EMERGENCY] Memory {mem['percent']:.1f}% - forcing cleanup")
+                scan_state.pause_for_memory()
+                aggressive_memory_cleanup()
+                time.sleep(0.5)
+                continue
+                
+            elif mem['percent'] > MEMORY_CRITICAL_THRESHOLD:
+                if not scan_state.is_paused:
+                    print(f"[CRITICAL] Memory {mem['percent']:.1f}% - pausing inference")
+                    scan_state.pause_for_memory()
+                    gc.collect()
+                    
+            elif mem['percent'] < MEMORY_WARNING_THRESHOLD:
+                if scan_state.is_paused:
+                    scan_state.resume_from_pause()
         
         # ===== GET FRAME =====
         try:
-            frame = frame_queue.get(timeout=1.0)
+            frame = frame_queue.get(timeout=0.5)
         except queue.Empty:
             continue
 
@@ -346,75 +387,84 @@ def inference_worker(model: YOLO, frame_queue: Queue, sender_frame_queue: Queue)
         frame_counter = Counter()
         annotated = None
         
-        is_scanning = scan_state.is_scanning  # Đọc 1 lần, tránh race condition
+        is_scanning = scan_state.is_scanning
+        is_paused = scan_state.is_paused
         
-        if is_scanning:
-            try:
-                results = model.predict(
-                    source=frame,
-                    conf=CONFIG["conf_threshold"],
-                    iou=CONFIG["nms_threshold"],
-                    verbose=False
-                )
-                result = results[0]
-
-                if result.boxes is not None and len(result.boxes) > 0:
-                    cls_ids = result.boxes.cls.cpu().numpy().astype(int)
-                    for cid in cls_ids:
-                        frame_counter[result.names[cid]] += 1
-
-                # Plot với kích thước nhỏ hơn để tiết kiệm memory
-                annotated = result.plot(font_size=0.4, line_width=1)
+        if is_scanning and not is_paused:
+            # Double-check memory before inference
+            mem = get_memory_usage()
+            if mem['available_mb'] < MIN_FREE_MB_FOR_INFERENCE:
+                # Không đủ RAM - skip inference frame này
+                consecutive_skips += 1
+                annotated = frame  # Dùng frame gốc, không copy
+                cv2.putText(annotated, f"LOW MEM ({mem['available_mb']:.0f}MB)", 
+                           (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 1)
                 
-                # QUAN TRỌNG: Giải phóng ngay lập tức
-                del results
-                del result
-                if 'cls_ids' in dir():
-                    del cls_ids
+                if consecutive_skips > 5:
+                    scan_state.pause_for_memory()
+                    gc.collect()
+            else:
+                consecutive_skips = 0
+                try:
+                    # Run inference
+                    results = model.predict(
+                        source=frame,
+                        conf=CONFIG["conf_threshold"],
+                        iou=CONFIG["nms_threshold"],
+                        verbose=False
+                    )
+                    result = results[0]
+
+                    if result.boxes is not None and len(result.boxes) > 0:
+                        cls_ids = result.boxes.cls.cpu().numpy().astype(int)
+                        for cid in cls_ids:
+                            frame_counter[result.names[cid]] += 1
+                        del cls_ids
+
+                    annotated = result.plot(font_size=0.4, line_width=1)
                     
-            except Exception as e:
-                print(f"[ERROR] Inference: {e}")
-                annotated = frame.copy()
-                cv2.putText(annotated, "ERROR", (10, 60), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+                    # Cleanup ngay lập tức
+                    del result
+                    del results
+                    
+                except Exception as e:
+                    print(f"[ERROR] Inference: {e}")
+                    annotated = frame
+                    cv2.putText(annotated, "ERROR", (10, 60), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+        
+        elif is_paused:
+            annotated = frame  # Không copy để tiết kiệm RAM
+            cv2.putText(annotated, paused_text, (10, 60), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 2)
         else:
-            # Không scan - chỉ copy frame và vẽ text
-            annotated = frame.copy()
-            cv2.putText(annotated, "STOPPED", (10, 60), 
+            annotated = frame
+            cv2.putText(annotated, stopped_text, (10, 60), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
-        # Giải phóng frame gốc ngay
-        del frame
-
-        # ===== DRAW FPS =====
-        cv2.putText(annotated, f"FPS: {fps:.1f}", (10, 30), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
+        # ===== DRAW FPS & MEMORY =====
+        mem = get_memory_usage()
+        cv2.putText(annotated, f"FPS:{fps:.1f} MEM:{mem['percent']:.0f}%", 
+                   (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 255, 0), 1)
 
         # ===== SEND TO QUEUE =====
         try:
             sender_frame_queue.put_nowait((annotated, frame_counter, curr_time))
         except queue.Full:
             try:
-                old_item = sender_frame_queue.get_nowait()
-                # Giải phóng item cũ
-                del old_item
+                old = sender_frame_queue.get_nowait()
+                del old
             except queue.Empty:
                 pass
             try:
                 sender_frame_queue.put_nowait((annotated, frame_counter, curr_time))
-            except queue.Full:
-                del annotated
-                del frame_counter
-                continue
+            except:
+                pass
 
-        # ===== GARBAGE COLLECTION =====
-        # GC thường xuyên hơn trên Pi Zero 2W
-        if curr_time - last_gc_time > 2.0:  # Mỗi 2 giây
-            gc.collect()
-            last_gc_time = curr_time
+        # Không del frame ở đây vì annotated có thể là reference đến frame
         
-        # Force GC mỗi 50 frames
-        if frame_count % 50 == 0:
+        # ===== GC mỗi 30 frames =====
+        if frame_count % 30 == 0:
             gc.collect()
 
     print("[INFO] Inference worker stopped")
@@ -424,9 +474,13 @@ def inference_worker(model: YOLO, frame_queue: Queue, sender_frame_queue: Queue)
 # ---------------------
 if __name__ == "__main__":
     print("=" * 50)
-    print("YOLO NCNN + FSM SCAN PIPELINE")
-    print(f"Initial Memory: {get_memory_usage()['percent']:.1f}%")
+    print("YOLO NCNN - OPTIMIZED FOR PI ZERO 2W")
     print("=" * 50)
+    
+    initial_mem = get_memory_usage()
+    print(f"[INIT] Total RAM: {initial_mem['total_mb']:.0f}MB")
+    print(f"[INIT] Used: {initial_mem['used_mb']:.0f}MB ({initial_mem['percent']:.1f}%)")
+    print(f"[INIT] Available: {initial_mem['available_mb']:.0f}MB")
 
     # Camera
     picam2 = Picamera2()
@@ -435,15 +489,19 @@ if __name__ == "__main__":
     )
     picam2.configure(config)
     picam2.start()
-    print(f"[INFO] Camera started at {CONFIG['camera_resolution']}")
+    print(f"[INFO] Camera: {CONFIG['camera_resolution']}")
+    gc.collect()
 
     # Model
+    print("[INFO] Loading model...")
     model = YOLO(CONFIG["model_name"], task="detect")
     gc.collect()
-    print(f"[INFO] Model loaded. Memory: {get_memory_usage()['percent']:.1f}%")
+    
+    mem_after_model = get_memory_usage()
+    print(f"[INFO] Memory after model: {mem_after_model['percent']:.1f}%")
 
-    # LCD & MQTT Setup
-    lcd_queue = Queue(maxsize=3)
+    # LCD & MQTT
+    lcd_queue = Queue(maxsize=2)
     lcd = init_lcd()
     Thread(target=lcd_worker, args=(lcd_queue, lcd), daemon=True).start()
 
@@ -457,35 +515,34 @@ if __name__ == "__main__":
         mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
         mqtt_client.loop_start()
     except Exception as e:
-        print(f"[ERROR] MQTT Connection: {e}")
+        print(f"[ERROR] MQTT: {e}")
 
-    # Queues
-    frame_queue = Queue(maxsize=CONFIG["queue_size"])
-    sender_frame_queue = Queue(maxsize=CONFIG["queue_size"])
+    # Queues - size nhỏ để tiết kiệm RAM
+    frame_queue = Queue(maxsize=1)
+    sender_frame_queue = Queue(maxsize=1)
 
     # Threads
-    camera_thread = Thread(target=camera_worker, args=(picam2, frame_queue), daemon=True)
-    inference_thread = Thread(target=inference_worker, args=(model, frame_queue, sender_frame_queue), daemon=True)
-    
-    camera_thread.start()
-    inference_thread.start()
+    Thread(target=camera_worker, args=(picam2, frame_queue), daemon=True).start()
+    Thread(target=inference_worker, args=(model, frame_queue, sender_frame_queue), daemon=True).start()
 
     print("[INFO] System running. Ctrl+C to stop.")
-    print(f"[INFO] Memory after threads: {get_memory_usage()['percent']:.1f}%")
 
-    # ImageZMQ with timeout
+    # ImageZMQ
     sender = imagezmq.ImageSender(connect_to=CONFIG["server_address"])
-    print(f"[INFO] Connected to server {CONFIG['server_address']}")
+    print(f"[INFO] Server: {CONFIG['server_address']}")
 
     try:
         send_count = 0
-        last_memory_log = time.time()
+        last_log = time.time()
         
         while not shutdown_event.is_set():
             try:
-                frame, counter, timestamp = sender_frame_queue.get(timeout=1.0)
+                data = sender_frame_queue.get(timeout=1.0)
             except queue.Empty:
                 continue
+            
+            frame, counter, timestamp = data
+            del data
                 
             msg = {
                 "camera_name": CONFIG["camera_name"],
@@ -496,20 +553,17 @@ if __name__ == "__main__":
             try:
                 sender.send_image(json.dumps(msg), frame)
             except Exception as e:
-                print(f"[ERROR] Send failed: {e}")
+                print(f"[ERROR] Send: {e}")
             
-            # Giải phóng ngay
-            del frame
-            del counter
-            del msg
-            
+            del frame, counter, msg
             send_count += 1
             
-            # Log memory mỗi 30 giây
-            if time.time() - last_memory_log > 30:
+            # Log mỗi 60 giây
+            if time.time() - last_log > 60:
                 mem = get_memory_usage()
-                print(f"[STATS] Sent: {send_count}, Memory: {mem['percent']:.1f}%, Free: {mem['available_mb']:.0f}MB")
-                last_memory_log = time.time()
+                print(f"[STATS] Sent:{send_count} Mem:{mem['percent']:.1f}% Free:{mem['available_mb']:.0f}MB")
+                last_log = time.time()
+                gc.collect()
                 
     except KeyboardInterrupt:
         print("\n[INFO] Shutting down...")
@@ -517,17 +571,9 @@ if __name__ == "__main__":
     finally:
         shutdown_event.set()
         time.sleep(0.5)
-        
         mqtt_client.loop_stop()
-        mqtt_client.disconnect()
-        
         if lcd:
             lcd.clear()
             lcd.close()
-            
         picam2.stop()
-        
-        # Final cleanup
-        gc.collect()
-        print(f"[INFO] Final memory: {get_memory_usage()['percent']:.1f}%")
         print("[INFO] Stopped.")
