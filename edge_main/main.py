@@ -171,16 +171,9 @@ def on_mqtt_message(client, userdata, msg):
                 lcd_queue.put_nowait((label, price, quantity))
     except Exception as e:
         print(f"[ERROR] MQTT Message: {e}")
-# ---------------------
-# SOLUTION 1: ImageZMQ PUB-SUB (không block)
-# ---------------------
-def create_sender(server_address):
-    """Tạo ImageZMQ sender với PUB-SUB pattern"""
-    sender = imagezmq.ImageSender(connect_to=server_address, REQ_REP=True)
-    return sender
 
 # ---------------------
-# SOLUTION 2: Non-blocking Queue với drop policy
+# Non-blocking Queue với drop policy
 # ---------------------
 def safe_queue_put(q, item, max_retries=2):
     """Put item vào queue, drop old item nếu full"""
@@ -233,16 +226,10 @@ def camera_worker(picam2, frame_queue: MPQueue, stop_event: Event):
     print("[CAMERA] Worker stopped.")
 
 # ---------------------
-# INFERENCE PROCESS (đã sửa)
+# INFERENCE PROCESS 
 # ---------------------
-def inference_process(
-    model_name: str,
-    model_config: dict,
-    frame_queue: MPQueue,
-    result_queue: MPQueue,
-    scanning_event: Event,
-    stop_event: Event
-):
+def inference_process(model_name: str,model_config: dict,frame_queue: MPQueue,
+                      result_queue: MPQueue,scanning_event: Event,stop_event: Event):
     from ultralytics import YOLO
     from collections import Counter
     
@@ -309,12 +296,13 @@ def inference_process(
                 annotated = result.plot(font_size=0.4, line_width=1)
                 del result, results
             else:
-                annotated = frame.copy()
-                cv2.putText(annotated, "STOPPED", (10, 60),
+                # annotated = frame.copy()
+                annotated = frame
+                cv2.putText(frame, "STOPPED", (10, 60),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
         except Exception as e:
             print(f"[ERROR] Inference: {e}")
-            annotated = frame.copy()
+            annotated = frame
         
         del frame
         
@@ -364,7 +352,7 @@ if __name__ == "__main__":
     picam2.configure(cam_config)
     picam2.start()
     
-    # Queues - tăng size một chút
+    # Queues 
     frame_queue = MPQueue(maxsize=3)
     result_queue = MPQueue(maxsize=3)
     
@@ -416,11 +404,8 @@ if __name__ == "__main__":
     )
     inference_proc.start()
     
-    # ===== QUAN TRỌNG: Dùng PUB-SUB thay vì REQ-REP =====
-    sender = imagezmq.ImageSender(
-        connect_to=CONFIG["server_address"],
-        REQ_REP=True  # ← THAY ĐỔI QUAN TRỌNG!
-    )
+    # ===== ImgageZMQ cho gửi frame =====
+    sender = imagezmq.ImageSender(connect_to=CONFIG["server_address"],REQ_REP=True)
     # Set timeout để không bị treo khi server chết (2000ms = 2s)
     sender.zmq_socket.setsockopt(zmq.RCVTIMEO, 2000)
     sender.zmq_socket.setsockopt(zmq.LINGER, 0)
@@ -430,7 +415,7 @@ if __name__ == "__main__":
     print("[INFO] System running. Ctrl+C to stop.")
     
     last_frame_time = time.time()
-    watchdog_timeout = 5.0  # 5 giây không có frame → cảnh báo
+    watchdog_timeout = 5.0  # 5 giây không có frame -> cảnh báo
     
     try:
         while not stop_event.is_set():
