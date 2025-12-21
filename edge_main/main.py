@@ -474,8 +474,6 @@ if __name__ == "__main__":
                         cam_lag = time.time() - cam_heartbeat.value
                         if cam_lag > watchdog_timeout:
                             print(f"[ERROR] Camera thread bị treo! (Không chụp ảnh trong {cam_lag:.1f}s)")
-                        else:
-                            print(f"[WARNING] Camera vẫn chạy (lag {cam_lag:.1f}s) -> Có thể Inference bị treo hoặc quá chậm.")
     
     except KeyboardInterrupt:
         print("\n[INFO] Shutting down...")
