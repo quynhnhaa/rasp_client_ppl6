@@ -478,7 +478,7 @@ if __name__ == "__main__":
                         else:
                             print(f"[WARNING] Camera vẫn chạy tốt (lag {cam_lag:.1f}s) -> Inference Process bị treo!") 
                             count_infer += 1
-                            if count_infer >= 10:
+                            if count_infer >= 15:
                                 print("[ERROR] Inference process liên tục bị treo! Khởi động lại...")
                                 inference_proc.terminate()
                                 inference_proc = Process(
