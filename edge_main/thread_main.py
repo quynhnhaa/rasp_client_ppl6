@@ -70,7 +70,7 @@ def emergency_memory_cleanup():
 # ---------------------
 class ScanStateManager:
     def __init__(self):
-        self._is_scanning = False
+        self._is_scanning = True
         self._lock = Lock()
         self._last_change_time = 0
         self._min_interval = 0.5  # Tối thiểu 0.5s giữa các lần đổi trạng thái
@@ -210,25 +210,11 @@ def init_lcd():
 def on_mqtt_connect(client, userdata, flags, rc):
     if rc == 0:
         print(f"[MQTT] Connected. Subscribing...")
-        client.subscribe([(MQTT_TOPIC, 0), (MQTT_TOPIC_CMD, 0)])
+        client.subscribe([(MQTT_TOPIC, 0)])
     else:
         print(f"[MQTT] Failed to connect, rc={rc}")
 
 def on_mqtt_message(client, userdata, msg):
-    if msg.topic == MQTT_TOPIC_CMD:
-        payload = msg.payload.decode().strip().upper()
-        if payload == "SCAN":
-            if scan_state.set_scanning(True):
-                print("[CMD] SCAN STARTED")
-            else:
-                print("[CMD] SCAN ignored (rate limited)")
-        elif payload == "STOP":
-            if scan_state.set_scanning(False):
-                print("[CMD] SCAN STOPPED")
-            else:
-                print("[CMD] STOP ignored (rate limited)")
-        return
-
     q = userdata.get('queue')
     try:
         data = json.loads(msg.payload.decode())
@@ -325,7 +311,6 @@ def inference_worker(model: YOLO, frame_queue: Queue, sender_frame_queue: Queue)
             if mem['percent'] > 90:
                 print(f"[CRITICAL] Memory critical: {mem['percent']:.1f}%")
                 # Tạm dừng scan để giải phóng memory
-                scan_state.set_scanning(False)
                 emergency_memory_cleanup()
                 time.sleep(1)
             last_memory_check = current_time
