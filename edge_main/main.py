@@ -298,7 +298,7 @@ def inference_process(model_name: str,model_config: dict,frame_queue: MPQueue,
             else:
                 annotated = frame.copy()
                 # annotated = frame
-                cv2.putText(frame, "STOPPED", (10, 60),
+                cv2.putText(annotated, "STOPPED", (10, 60),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
         except Exception as e:
             print(f"[ERROR] Inference: {e}")
@@ -322,7 +322,7 @@ def inference_process(model_name: str,model_config: dict,frame_queue: MPQueue,
             gc.collect()
             gc_counter = 0
             if dropped_frames > 0:
-                print(f"[INFERENCE] Dropped {dropped_frames} frames")
+                # print(f"[INFERENCE] Dropped {dropped_frames} frames")
                 dropped_frames = 0
     
     print("[INFERENCE] Process stopped.")
