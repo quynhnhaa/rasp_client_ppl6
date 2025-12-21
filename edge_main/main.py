@@ -424,7 +424,7 @@ if __name__ == "__main__":
     
     last_frame_time = time.time()
     watchdog_timeout = 5.0  # 5 giây không có frame -> cảnh báo
-    
+    count_infer = 0
     try:
         while not stop_event.is_set():
             # Get result với timeout
@@ -468,6 +468,7 @@ if __name__ == "__main__":
                                 stop_event
                             )
                         )
+                        count_infer = 0
                         inference_proc.start()
                     else:
                         # Chẩn đoán nguyên nhân
@@ -475,7 +476,24 @@ if __name__ == "__main__":
                         if cam_lag > watchdog_timeout:
                             print(f"[ERROR] Camera thread bị treo! (Không chụp ảnh trong {cam_lag:.1f}s)")
                         else:
-                            print(f"[WARNING] Camera vẫn chạy tốt (lag {cam_lag:.1f}s) -> Inference Process bị treo!")                        
+                            print(f"[WARNING] Camera vẫn chạy tốt (lag {cam_lag:.1f}s) -> Inference Process bị treo!") 
+                            count_infer += 1
+                            if count_infer >= 10:
+                                print("[ERROR] Inference process liên tục bị treo! Khởi động lại...")
+                                inference_proc.terminate()
+                                inference_proc = Process(
+                                    target=inference_process,
+                                    args=(
+                                        CONFIG["model_name"],
+                                        model_config,
+                                        frame_queue,
+                                        result_queue,
+                                        scanning_event,
+                                        stop_event
+                                    )
+                                )
+                                count_infer = 0
+                                inference_proc.start()
     
     except KeyboardInterrupt:
         print("\n[INFO] Shutting down...")
