@@ -404,7 +404,7 @@ def inference_worker(model: YOLO, frame_queue: Queue, sender_frame_queue: Queue)
         del frame
 
         # ===== DRAW FPS =====
-        cv2.putText(annotated, f"FPS: {fps:.1f}", (10, 30), 
+        cv2.putText(annotated, f"FPS: {int(fps)}", (10, 30), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
 
         # ===== SEND TO QUEUE =====
