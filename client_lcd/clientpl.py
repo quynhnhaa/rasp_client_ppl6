@@ -46,7 +46,7 @@ CONNECT_TO = f"tcp://{CONFIG['server_ip']}:{CONFIG['port']}"
 MQTT_BROKER = "broker.hivemq.com"
 MQTT_PORT = 1883
 MQTT_TOPIC = "pbl6/products"
-LCD_DISPLAY_DURATION = 3 # seconds to display each message
+LCD_DISPLAY_DURATION = 2 # seconds to display each message
 
 # ========== Khởi tạo LCD ==========
 def init_lcd():
@@ -91,19 +91,62 @@ def long_string(display, text='', num_line=1, num_cols=16):
         # Chuỗi ngắn, in thẳng
         display.cursor_pos = (row, 0)
         display.write_string(text.ljust(num_cols))
+# def display_on_lcd(lcd, label, price, quantity):
+#     if lcd is None:
+#         return 0
+
+#     time_spent_sleeping = 0
+#     try:
+#         # ========== Line 2: Total: {giá tiền} ==========
+#         lcd.cursor_pos = (1, 0)
+#         total_price = price * quantity if quantity > 1 else price
+#         price_str = f"{total_price:,.0f}VND"
+#         lcd.write_string(price_str.rjust(16)[:16])
+        
+#         # ========== Line 1: <label> x<quantity> ==========
+#         quantity_str = f" x{quantity}" if quantity > 1 else ""
+#         quantity_len = len(quantity_str)
+#         label_cols = 16 - quantity_len
+
+#         lcd.cursor_pos = (0, label_cols)
+#         lcd.write_string(quantity_str)
+
+#         text = str(label)
+#         lcd.cursor_pos = (0, 0)
+
+#         if len(text) > label_cols:
+#             lcd.write_string(text[:label_cols])
+#             sleep_duration = 0.6
+#             time.sleep(sleep_duration)
+#             time_spent_sleeping += sleep_duration
+
+#             scroll_text = text + ' ' * label_cols
+#             for i in range(len(scroll_text) - label_cols + 1):
+#                 lcd.cursor_pos = (0, 0)
+#                 lcd.write_string(scroll_text[i:i + label_cols])
+#                 sleep_duration = 0.2
+#                 time.sleep(sleep_duration)
+#                 time_spent_sleeping += sleep_duration
+            
+#             sleep_duration = 1
+#             time.sleep(sleep_duration)
+#             time_spent_sleeping += sleep_duration
+#         else:
+#             lcd.write_string(text.ljust(label_cols))
+
+#     except Exception as e:
+#         print(f"[ERROR] Could not write to LCD: {e}")
+    
+#     return time_spent_sleeping
 def display_on_lcd(lcd, label, price, quantity):
     if lcd is None:
         return 0
-
-    time_spent_sleeping = 0
     try:
-        # ========== Line 2: Total: {giá tiền} ==========
         lcd.cursor_pos = (1, 0)
         total_price = price * quantity if quantity > 1 else price
         price_str = f"{total_price:,.0f}VND"
         lcd.write_string(price_str.rjust(16)[:16])
         
-        # ========== Line 1: <label> x<quantity> ==========
         quantity_str = f" x{quantity}" if quantity > 1 else ""
         quantity_len = len(quantity_str)
         label_cols = 16 - quantity_len
@@ -116,29 +159,11 @@ def display_on_lcd(lcd, label, price, quantity):
 
         if len(text) > label_cols:
             lcd.write_string(text[:label_cols])
-            sleep_duration = 0.6
-            time.sleep(sleep_duration)
-            time_spent_sleeping += sleep_duration
-
-            scroll_text = text + ' ' * label_cols
-            for i in range(len(scroll_text) - label_cols + 1):
-                lcd.cursor_pos = (0, 0)
-                lcd.write_string(scroll_text[i:i + label_cols])
-                sleep_duration = 0.2
-                time.sleep(sleep_duration)
-                time_spent_sleeping += sleep_duration
-            
-            sleep_duration = 1
-            time.sleep(sleep_duration)
-            time_spent_sleeping += sleep_duration
         else:
             lcd.write_string(text.ljust(label_cols))
-
     except Exception as e:
-        print(f"[ERROR] Could not write to LCD: {e}")
-    
-    return time_spent_sleeping
-
+        print(f"[ERROR] LCD: {e}")
+    return 0
 
 def lcd_worker(q, lcd_obj):
     # Clear screen once at the start

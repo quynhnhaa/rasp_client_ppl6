@@ -70,7 +70,7 @@ def emergency_memory_cleanup():
 # ---------------------
 class ScanStateManager:
     def __init__(self):
-        self._is_scanning = False
+        self._is_scanning = True
         self._lock = Lock()
         self._last_change_time = 0
         self._min_interval = 0.5  # Tối thiểu 0.5s giữa các lần đổi trạng thái
@@ -210,25 +210,11 @@ def init_lcd():
 def on_mqtt_connect(client, userdata, flags, rc):
     if rc == 0:
         print(f"[MQTT] Connected. Subscribing...")
-        client.subscribe([(MQTT_TOPIC, 0), (MQTT_TOPIC_CMD, 0)])
+        client.subscribe([(MQTT_TOPIC, 0)])
     else:
         print(f"[MQTT] Failed to connect, rc={rc}")
 
 def on_mqtt_message(client, userdata, msg):
-    if msg.topic == MQTT_TOPIC_CMD:
-        payload = msg.payload.decode().strip().upper()
-        if payload == "SCAN":
-            if scan_state.set_scanning(True):
-                print("[CMD] SCAN STARTED")
-            else:
-                print("[CMD] SCAN ignored (rate limited)")
-        elif payload == "STOP":
-            if scan_state.set_scanning(False):
-                print("[CMD] SCAN STOPPED")
-            else:
-                print("[CMD] STOP ignored (rate limited)")
-        return
-
     q = userdata.get('queue')
     try:
         data = json.loads(msg.payload.decode())
@@ -325,7 +311,6 @@ def inference_worker(model: YOLO, frame_queue: Queue, sender_frame_queue: Queue)
             if mem['percent'] > 90:
                 print(f"[CRITICAL] Memory critical: {mem['percent']:.1f}%")
                 # Tạm dừng scan để giải phóng memory
-                scan_state.set_scanning(False)
                 emergency_memory_cleanup()
                 time.sleep(1)
             last_memory_check = current_time
@@ -358,8 +343,8 @@ def inference_worker(model: YOLO, frame_queue: Queue, sender_frame_queue: Queue)
                 )
                 result = results[0]
 
-                
-                annotated = result.plot(font_size=0.4, line_width=1)
+                # Vẽ trực tiếp lên frame để tiết kiệm RAM (tránh tạo bản copy)
+                annotated = frame
 
                 if result.boxes is not None and len(result.boxes) > 0:
                     boxes = result.boxes.xyxy.cpu().numpy().astype(int)
@@ -367,10 +352,21 @@ def inference_worker(model: YOLO, frame_queue: Queue, sender_frame_queue: Queue)
                     confs = result.boxes.conf.cpu().numpy()
                     
                     for i in range(len(boxes)):
+                        x1, y1, x2, y2 = boxes[i]
                         cls_id = cls_ids[i]
+                        conf = confs[i]
                         label = result.names[cls_id]
                         
                         frame_counter[label] += 1
+                        
+                        # Vẽ Bounding Box & Label thủ công
+                        cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                        
+                        text = f"{label} {conf:.2f}"
+                        (w, h), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
+                        cv2.rectangle(annotated, (x1, y1 - 15), (x1 + w, y1), (0, 255, 0), -1)
+                        cv2.putText(annotated, text, (x1, y1 - 5), 
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1)
                     
                     del boxes, cls_ids, confs
                 
@@ -393,7 +389,7 @@ def inference_worker(model: YOLO, frame_queue: Queue, sender_frame_queue: Queue)
         del frame
 
         # ===== DRAW FPS =====
-        cv2.putText(annotated, f"FPS: {int(fps)}", (10, 30), 
+        cv2.putText(annotated, f"FPS: {fps:.1f}", (10, 30), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
 
         # ===== SEND TO QUEUE =====
